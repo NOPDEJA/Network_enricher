@@ -1,0 +1,122 @@
+# CLAUDE.md
+
+Behavioral guidelines for this project. Merged from general best practices + project-specific rules.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+---
+
+## Project Context
+
+This is a **network flow analysis enricher** built in Go using [goflow2](https://github.com/netsampler/goflow2).
+It ingests NetFlow v5/v9, IPFIX, and sFlow data, enriches flows (GeoIP, ASN, DNS, threat intel, interface mapping, etc.),
+and forwards enriched records downstream (e.g. Kafka, Elasticsearch, ClickHouse, stdout JSON).
+
+Think: open-source ElastiFlow alternative.
+
+**Key concepts to know:**
+- Flows are stateless records — enrichment must be fast and non-blocking
+- Packet loss is worse than enrichment failure — always fail open
+- Proto/struct definitions come from goflow2's `pb/` — do not modify without asking
+- Enrichers run as a pipeline; order matters
+
+---
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+
+- State your assumptions explicitly, then proceed (no need to wait for confirmation).
+- If multiple interpretations exist, pick the most conservative and say which you chose.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is genuinely ambiguous (e.g. field naming, enricher ordering), name it and make a call.
+
+---
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions unless the same logic appears 3+ times.
+- No "pluggable interface" or "configurable factory" unless explicitly requested.
+- No error handling for impossible scenarios (e.g. nil checks on always-initialized structs).
+- Prefer flat structs over deep nesting for flow records.
+
+Ask: *"Would a senior Go engineer say this is overcomplicated?"* If yes, simplify.
+
+---
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+
+- Don't reformat unrelated files — `gofmt` only on files you touch.
+- Don't rename fields or restructure types unless that's the task.
+- Match existing patterns (error wrapping style, logging format, context propagation).
+- If you notice a bug or dead code nearby, **mention it in a comment** — don't fix it silently.
+
+When your changes create orphans:
+
+- Remove imports/variables/functions that **your** changes made unused.
+- Run `go vet ./...` mentally — don't leave unused vars that won't compile.
+
+**Every changed line should trace directly to the request.**
+
+---
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+
+- "Add GeoIP enricher" → "Enricher attaches `src_country`, `dst_country` fields; passes unit test with known IPs"
+- "Fix dropped flows" → "Identify the pipeline stage dropping records; add metric; make test reproduce it then fix it"
+- "Optimize throughput" → "Benchmark before and after with `go test -bench`; target is stated in the task"
+
+For multi-step tasks, state a brief plan first:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+---
+
+## 5. Go-Specific Rules
+
+- **Never use `init()`** unless integrating with a framework that requires it.
+- **Goroutine hygiene**: every goroutine must have a clear owner and shutdown path (context cancellation or done channel).
+- **Channels over mutexes** for pipeline stages; mutexes for shared caches (GeoIP, ASN lookups).
+- **Enrich in parallel where safe**, but keep per-flow enrichment deterministic and idempotent.
+- **Fail open on enrichment errors**: if GeoIP lookup fails, log a metric and continue — never drop the flow.
+- Use `slog` or `zerolog` (match whatever the project already uses) — no `fmt.Println` in production paths.
+- Proto-generated files in `pb/` are read-only. Extend via wrapper structs, not by editing generated code.
+
+---
+
+## 6. Performance Rules (Network Path)
+
+- No allocations in the hot path if avoidable — reuse buffers, use `sync.Pool`.
+- No blocking I/O (DNS, HTTP) in the flow processing goroutine — offload to async workers with a timeout.
+- All enrichment caches must have a TTL and max size — unbounded caches will OOM under traffic.
+- Benchmark any enricher that touches external data (GeoIP DB, threat feeds) before merging.
+
+---
+
+## 7. Testing Conventions
+
+- Unit tests live in `_test.go` files alongside the package.
+- Use table-driven tests for enrichers (multiple IP/flow inputs → expected output).
+- Integration tests that require external services (Kafka, ES) go in `integration/` and are gated by a build tag: `//go:build integration`.
+- Run: `go test ./...` for unit tests, `go test -tags integration ./...` for full suite.
+
+---
+
+**These guidelines are working if:** diffs are tight and traceable, enrichers are testable in isolation, and the pipeline never silently drops flows.
