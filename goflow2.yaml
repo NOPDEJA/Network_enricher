@@ -1,0 +1,11 @@
+listen:
+  - netflow://:2055
+
+format: pb
+
+transport: kafka
+
+kafka:
+  brokers:
+    - redpanda:29092
+  topic: raw-flows
