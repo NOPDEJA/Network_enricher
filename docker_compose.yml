@@ -23,7 +23,7 @@ services:
     environment:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
-      
+
   goflow2:
     image: netsampler/goflow2:latest
     ports:
@@ -33,6 +33,7 @@ services:
       - -transport=kafka
       - -transport.kafka.brokers=redpanda:29092
       - -transport.kafka.topic=raw-flows
+      - -listen=netflow://:2055
     depends_on:
       - redpanda
 
@@ -43,3 +44,5 @@ services:
       - goflow2
       - -p
       - "2055"
+    depends_on:
+      - goflow2
