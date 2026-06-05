@@ -27,12 +27,15 @@ services:
     image: netsampler/goflow2:latest
     ports:
       - "2055:2055/udp"
-    volumes:
-      - ./goflow2.yaml:/etc/goflow2/goflow2.yaml
     command:
-      - -config=/etc/goflow2/goflow2.yaml
+      - -listen=netflow://:2055
+      - -transport=kafka
+      - -transport.kafka.brokers=redpanda:29092
+      - -transport.kafka.topic=raw-flows
+      - -format=bin
     depends_on:
       - redpanda
+    restart: on-failure
 
   nflow-generator:
     image: networkstatic/nflow-generator
