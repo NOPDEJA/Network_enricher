@@ -27,15 +27,22 @@ services:
     image: netsampler/goflow2:latest
     ports:
       - "2055:2055/udp"
+      - "4739:4739/udp"
     command:
       - -listen=netflow://:2055
+      - -listen=netflow://:4739
       - -transport=kafka
       - -transport.kafka.brokers=redpanda:29092
       - -transport.kafka.topic=raw-flows
-      - -format=bin
+      - -format=json
     depends_on:
       - redpanda
     restart: on-failure
+    healthcheck:
+      test: ["CMD", "sh", "-c", "cat /proc/net/udp6 | grep 0807"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   nflow-generator:
     image: networkstatic/nflow-generator
@@ -45,5 +52,6 @@ services:
       - -p
       - "2055"
     depends_on:
-      - goflow2
+      goflow2:
+        condition: service_healthy
     restart: on-failure
