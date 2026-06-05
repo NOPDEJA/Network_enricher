@@ -14,34 +14,35 @@ import (
 
 type FlowMessage struct {
 	// Present in all flow types (v5, v9, IPFIX)
-	Type          string `json:"Type"`
-	TimeFlowStart uint64 `json:"TimeFlowStart"`
-	TimeFlowEnd   uint64 `json:"TimeFlowEnd"`
-	SrcAddr       string `json:"SrcAddr"`
-	DstAddr       string `json:"DstAddr"`
-	SrcPort       uint32 `json:"SrcPort"`
-	DstPort       uint32 `json:"DstPort"`
-	Proto         uint32 `json:"Proto"`
-	Bytes         uint64 `json:"Bytes"`
-	Packets       uint64 `json:"Packets"`
-	SamplingRate  uint64 `json:"SamplingRate"`
-	ExporterAddr  string `json:"ExporterAddr"`
-	NextHop       string `json:"NextHop"`
-	SrcAS         uint32 `json:"SrcAS"`
-	DstAS         uint32 `json:"DstAS"`
-	TCPFlags      uint32 `json:"TCPFlags"`
-	InIf          uint32 `json:"InIf"`
-	OutIf         uint32 `json:"OutIf"`
+	Type            string `json:"type"`
+	TimeFlowStartNs uint64 `json:"time_flow_start_ns"`
+	TimeFlowEndNs   uint64 `json:"time_flow_end_ns"`
+	TimeReceivedNs  uint64 `json:"time_received_ns"`
+	SrcAddr         string `json:"src_addr"`
+	DstAddr         string `json:"dst_addr"`
+	SrcPort         uint32 `json:"src_port"`
+	DstPort         uint32 `json:"dst_port"`
+	Proto           string `json:"proto"` // "TCP", "UDP", "ICMP", etc.
+	Bytes           uint64 `json:"bytes"`
+	Packets         uint64 `json:"packets"`
+	SamplingRate    uint64 `json:"sampling_rate"`
+	SamplerAddress  string `json:"sampler_address"` // exporter IP
+	NextHop         string `json:"next_hop"`
+	SrcAS           uint32 `json:"src_as"`
+	DstAS           uint32 `json:"dst_as"`
+	TCPFlags        uint32 `json:"tcp_flags"`
+	InIf            uint32 `json:"in_if"`
+	OutIf           uint32 `json:"out_if"`
+	SequenceNum     uint32 `json:"sequence_num"`
 
-	// Populated by NetFlow v9 and IPFIX, zero in v5
-	Etype               uint32 `json:"Etype"`         // 0x0800=IPv4, 0x86DD=IPv6
-	FlowDirection       uint32 `json:"FlowDirection"` // 0=ingress, 1=egress
-	SrcVlan             uint32 `json:"SrcVlan"`
-	DstVlan             uint32 `json:"DstVlan"`
-	ForwardingStatus    uint32 `json:"ForwardingStatus"`
-	IPTos               uint32 `json:"IPTos"`
-	IPTTL               uint32 `json:"IPTTL"`
-	ObservationDomainId uint32 `json:"ObservationDomainId"` // IPFIX only
+	// Populated by NetFlow v9 and IPFIX, zero/empty in v5
+	Etype               string `json:"etype"`                 // "IPv4" or "IPv6"
+	SrcVlan             uint32 `json:"src_vlan"`
+	DstVlan             uint32 `json:"dst_vlan"`
+	ForwardingStatus    uint32 `json:"forwarding_status"`
+	IPTos               uint32 `json:"ip_tos"`
+	IPTTL               uint32 `json:"ip_ttl"`
+	ObservationDomainId uint32 `json:"observation_domain_id"` // IPFIX only
 }
 
 func main() {
@@ -73,9 +74,9 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("%s:%d → %s:%d  proto=%d  bytes=%d  packets=%d  exporter=%s  sampling=%d\n",
+		fmt.Printf("%s:%d → %s:%d  proto=%s  etype=%s  bytes=%d  packets=%d  exporter=%s\n",
 			flow.SrcAddr, flow.SrcPort, flow.DstAddr, flow.DstPort,
-			flow.Proto, flow.Bytes, flow.Packets, flow.ExporterAddr, flow.SamplingRate)
+			flow.Proto, flow.Etype, flow.Bytes, flow.Packets, flow.SamplerAddress)
 	}
 
 	log.Println("shutting down")
