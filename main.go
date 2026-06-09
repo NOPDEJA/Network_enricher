@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -45,9 +46,43 @@ type FlowMessage struct {
 	ObservationDomainId uint32 `json:"observation_domain_id"` // IPFIX only
 }
 
+// EnrichedFlow extends FlowMessage with fields added by each enricher stage.
+// Weeks 4–6 will add tenant_id, threat flags, dedup status, etc.
+type EnrichedFlow struct {
+	FlowMessage
+	SrcGeo GeoData
+	DstGeo GeoData
+}
+
+func enrich(flow FlowMessage, geo *GeoStore) EnrichedFlow {
+	e := EnrichedFlow{FlowMessage: flow}
+	if geo != nil {
+		e.SrcGeo = geo.Lookup(net.ParseIP(flow.SrcAddr))
+		e.DstGeo = geo.Lookup(net.ParseIP(flow.DstAddr))
+	}
+	return e
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// GeoIP is optional: set GEOIP_CITY_PATH and GEOIP_ASN_PATH to enable.
+	var geo *GeoStore
+	cityPath := os.Getenv("GEOIP_CITY_PATH")
+	asnPath := os.Getenv("GEOIP_ASN_PATH")
+	if cityPath != "" && asnPath != "" {
+		var err error
+		geo, err = NewGeoStore(cityPath, asnPath)
+		if err != nil {
+			log.Printf("geoip init failed, continuing without geo enrichment: %v", err)
+		} else {
+			log.Println("geoip loaded")
+			geo.StartRefresh(ctx, cityPath, asnPath)
+		}
+	} else {
+		log.Println("GEOIP_CITY_PATH / GEOIP_ASN_PATH not set — skipping geo enrichment")
+	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: []string{"localhost:9092"},
@@ -74,9 +109,13 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("%s:%d → %s:%d  proto=%s  etype=%s  bytes=%d  packets=%d  exporter=%s\n",
-			flow.SrcAddr, flow.SrcPort, flow.DstAddr, flow.DstPort,
-			flow.Proto, flow.Etype, flow.Bytes, flow.Packets, flow.SamplerAddress)
+		e := enrich(flow, geo)
+
+		fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src_country=%s  dst_country=%s  src_asn=%d  dst_asn=%d\n",
+			e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
+			e.Proto, e.Bytes,
+			e.SrcGeo.CountryCode, e.DstGeo.CountryCode,
+			e.SrcGeo.ASN, e.DstGeo.ASN)
 	}
 
 	log.Println("shutting down")
