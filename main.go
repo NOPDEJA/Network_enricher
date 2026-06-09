@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -193,6 +195,39 @@ func main() {
 	registerMetrics()
 	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
 
+	workerCount := intEnv("ENRICH_WORKERS", runtime.NumCPU())
+	flowChan := make(chan FlowMessage, workerCount*100)
+
+	var wg sync.WaitGroup
+	for range workerCount {
+		wg.Go(func() {
+			for flow := range flowChan {
+				e := enrich(flow, geo, tenant, threat)
+				if e.IsThreatSrc {
+					threatHits.WithLabelValues("src").Inc()
+				}
+				if e.IsThreatDst {
+					threatHits.WithLabelValues("dst").Inc()
+				}
+				if writer != nil {
+					writer.Add(toFlowRow(e))
+				} else {
+					threatFlag := ""
+					if e.IsThreatSrc || e.IsThreatDst {
+						threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
+					}
+					fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
+						e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
+						e.Proto, e.Bytes,
+						e.SrcGeo.CountryCode, e.SrcGeo.ASN,
+						e.DstGeo.CountryCode, e.DstGeo.ASN,
+						e.TenantID, threatFlag)
+				}
+				flowsWritten.Inc()
+			}
+		})
+	}
+
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: []string{"localhost:9092"},
 		GroupID: "enricher-group",
@@ -200,7 +235,7 @@ func main() {
 	})
 	defer r.Close()
 
-	log.Println("connected to Redpanda, reading from raw-flows...")
+	log.Printf("connected to Redpanda, reading from raw-flows (workers=%d)...", workerCount)
 
 	for {
 		msg, err := r.ReadMessage(ctx)
@@ -225,31 +260,10 @@ func main() {
 			continue
 		}
 
-		e := enrich(flow, geo, tenant, threat)
-
-		if e.IsThreatSrc {
-			threatHits.WithLabelValues("src").Inc()
-		}
-		if e.IsThreatDst {
-			threatHits.WithLabelValues("dst").Inc()
-		}
-
-		if writer != nil {
-			writer.Add(toFlowRow(e))
-		} else {
-			threatFlag := ""
-			if e.IsThreatSrc || e.IsThreatDst {
-				threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
-			}
-			fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
-				e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
-				e.Proto, e.Bytes,
-				e.SrcGeo.CountryCode, e.SrcGeo.ASN,
-				e.DstGeo.CountryCode, e.DstGeo.ASN,
-				e.TenantID, threatFlag)
-		}
-		flowsWritten.Inc()
+		flowChan <- flow
 	}
 
+	close(flowChan)
+	wg.Wait()
 	log.Println("shutting down")
 }
