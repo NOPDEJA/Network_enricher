@@ -229,7 +229,7 @@ func main() {
 	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{"localhost:9092"},
+		Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
 		GroupID: "enricher-group",
 		Topic:   "raw-flows",
 	})
