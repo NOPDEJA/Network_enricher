@@ -12,8 +12,7 @@ nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] �
    (NetFlow v5)     (decode)    (raw-flows)    (this repo)
 ```
 
-> **Status:** Week 7 of 8 complete — fully enriched flows reaching ClickHouse,
-> worker pool live, Prometheus metrics and pprof available.
+> **Status:** Week 8 complete — PoC finished. See [Gap Analysis](#gap-analysis-poc--production) before promoting to production.
 
 ---
 
@@ -45,8 +44,22 @@ Redpanda (raw-flows)
 The Docker stack (Redpanda + ClickHouse + goflow2 + nflow-generator) is resource-heavy
 (~3–6 GB RAM). Running it on a separate machine keeps your dev box free for Go tooling.
 
-Point the enricher at the infra machine with `REDPANDA_ADDR` and `CLICKHOUSE_ADDR`
-(see [Configuration](#configuration) below).
+**On the infra machine** — export its LAN IP so Redpanda advertises the right address
+to remote clients (without this, a remote client connects and gets redirected to
+`localhost`, which fails):
+
+```bash
+export REDPANDA_EXTERNAL_ADDR=192.168.1.50   # ← the infra machine's LAN IP
+docker compose up -d
+```
+
+**On the dev machine** — point the enricher at the infra machine:
+
+```bash
+export REDPANDA_ADDR=192.168.1.50:9092
+export CLICKHOUSE_ADDR=192.168.1.50:9000
+go run .
+```
 
 ---
 
@@ -229,7 +242,7 @@ Benchmark baselines on Intel i7-12650H:
 - [x] **Week 5** — ClickHouse schema + batched native-protocol writer
 - [x] **Week 6** — Flow deduplication (LRU) + Prometheus metrics
 - [x] **Week 7** — Worker pool (parallel enrichment) + pprof + benchmarks
-- [ ] **Week 8** — Documentation + PoC→production gap analysis
+- [x] **Week 8** — Documentation + PoC→production gap analysis
 
 ---
 
@@ -240,3 +253,49 @@ Benchmark baselines on Intel i7-12650H:
 - **No blocking I/O in the hot path** — GeoIP and threat lookups are in-memory; ClickHouse writes are batched and async.
 - **Bounded caches** — every lookup cache has a TTL and a max size; no unbounded growth.
 - **Hot-reload without downtime** — GeoIP, tenant config, and threat feed refresh behind a `sync.RWMutex`; no restarts needed.
+
+---
+
+## Gap analysis: PoC → production
+
+Items that are fine for a PoC but need work before real traffic.
+
+### Security
+| Gap | Current state | Production fix |
+|---|---|---|
+| No auth on Redpanda | PLAINTEXT, no SASL | Enable SASL/SCRAM, pass credentials via env |
+| No auth on ClickHouse | Empty password | Set `CLICKHOUSE_PASSWORD`, enable TLS |
+| No TLS anywhere | All connections plaintext | TLS for Kafka and ClickHouse native protocol |
+| Threat feed over HTTP | CSV fetched over HTTPS (OK) but no signature verification | Verify feed hash/signature if source supports it |
+
+### Reliability
+| Gap | Current state | Production fix |
+|---|---|---|
+| Kafka offset auto-commit | Offsets committed before ClickHouse flush succeeds — crash between the two loses flows | Commit offsets only after `batch.Send()` returns nil |
+| No dead-letter queue | Unmarshal failures are logged and dropped | Publish bad messages to a `raw-flows-dlq` topic for inspection |
+| Single instance | One enricher process — no HA | Run 2+ replicas; Kafka consumer group handles partition distribution automatically |
+| ClickHouse reconnect | `NewBatchWriter` fails fast on startup; no retry | Retry with backoff, or crash and let the container orchestrator restart |
+
+### Observability
+| Gap | Current state | Production fix |
+|---|---|---|
+| Unstructured logs | `log.Printf` plain text | Switch to `slog` with JSON output; add `flow_type`, `tenant_id` fields |
+| No alerting rules | Prometheus metrics exist but no alerts | Add Alertmanager rules: `enricher_flows_received_total` rate = 0, dedup rate > 50%, CH flush errors |
+| No dashboards | Raw `/metrics` only | Grafana dashboard — flows/s, dedup rate, threat hit rate, CH write latency |
+| No tracing | No spans | Add OpenTelemetry traces for the enrich → write path |
+
+### Operations
+| Gap | Current state | Production fix |
+|---|---|---|
+| GeoIP updates are manual | Databases loaded at startup, refresh every 24 h from the same path | Use MaxMind's `geoipupdate` cron job to pull fresh mmdb files automatically |
+| Config is env-var only | Works for dev and containers | For secrets (passwords, API keys), use a secrets manager (Vault, AWS SSM, K8s secrets) |
+| No schema migrations | `applySchema()` is idempotent but unversioned | Add a migration tool (e.g., `golang-migrate`) or version the DDL |
+| Docker Compose only | Dev stack only | Helm chart or Terraform module for a real deployment target |
+| No graceful Kafka partition revocation | Consumer group rebalance mid-processing can duplicate flows | Implement `kafka.ReaderConfig` with manual commit + rebalance listener |
+
+### Performance (at scale)
+| Gap | Current state | Production fix |
+|---|---|---|
+| Dedup is per-instance | Each replica has its own LRU — duplicates can cross replicas | Use Redis or a shared bloom filter for cross-replica dedup |
+| GeoIP lookup on every flow | Fast (RLock + mmdb binary search) but still per-flow | Benchmark at >100k flows/s; consider L1 cache (sync.Map keyed by /24 prefix) |
+| Threat store is a flat map | O(1) lookup — fine up to ~1M IPs | Switch to a bloom filter + confirm map for much larger threat feeds |
