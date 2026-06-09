@@ -47,19 +47,54 @@ type FlowMessage struct {
 }
 
 // EnrichedFlow extends FlowMessage with fields added by each enricher stage.
-// Weeks 4–6 will add tenant_id, threat flags, dedup status, etc.
+// Week 6 will add dedup status and Prometheus metrics.
 type EnrichedFlow struct {
 	FlowMessage
-	SrcGeo GeoData
-	DstGeo GeoData
+	SrcGeo          GeoData
+	DstGeo          GeoData
+	TenantID        uint32
+	TenantName      string
+	IsThreatSrc     bool
+	IsThreatDst     bool
+	ThreatLabel     string
+	IsSampled       bool
+	ExpandedBytes   uint64
+	ExpandedPackets uint64
 }
 
-func enrich(flow FlowMessage, geo *GeoStore) EnrichedFlow {
+func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore) EnrichedFlow {
 	e := EnrichedFlow{FlowMessage: flow}
+
 	if geo != nil {
 		e.SrcGeo = geo.Lookup(net.ParseIP(flow.SrcAddr))
 		e.DstGeo = geo.Lookup(net.ParseIP(flow.DstAddr))
 	}
+
+	if tenant != nil {
+		e.TenantID, e.TenantName = tenant.Lookup(net.ParseIP(flow.SrcAddr))
+	}
+
+	if threat != nil {
+		if ok, label := threat.Lookup(flow.SrcAddr); ok {
+			e.IsThreatSrc = true
+			e.ThreatLabel = label
+		}
+		if ok, label := threat.Lookup(flow.DstAddr); ok {
+			e.IsThreatDst = true
+			if e.ThreatLabel == "" {
+				e.ThreatLabel = label
+			}
+		}
+	}
+
+	// sFlow: multiply sampled byte/packet counts by the sampling rate.
+	// Type "SFLOW_5" is goflow2's JSON representation of the sFlow v5 enum.
+	if flow.Type == "SFLOW_5" && flow.SamplingRate > 1 {
+		e.IsSampled = true
+		e.ExpandedBytes = flow.Bytes * flow.SamplingRate
+		e.ExpandedPackets = flow.Packets * flow.SamplingRate
+	}
+
 	return e
 }
 
@@ -82,6 +117,35 @@ func main() {
 		}
 	} else {
 		log.Println("GEOIP_CITY_PATH / GEOIP_ASN_PATH not set — skipping geo enrichment")
+	}
+
+	// Tenant mapping — optional, set TENANT_CONFIG_PATH to enable.
+	var tenant *TenantStore
+	if tenantPath := os.Getenv("TENANT_CONFIG_PATH"); tenantPath != "" {
+		var err error
+		tenant, err = NewTenantStore(tenantPath)
+		if err != nil {
+			log.Printf("tenant store init failed, continuing without tenant mapping: %v", err)
+		} else {
+			log.Println("tenant config loaded")
+			tenant.StartRefresh(ctx, tenantPath)
+		}
+	} else {
+		log.Println("TENANT_CONFIG_PATH not set — skipping tenant mapping")
+	}
+
+	// Threat intelligence — optional, set THREAT_FEED_URL to override default.
+	var threat *ThreatStore
+	feedURL := os.Getenv("THREAT_FEED_URL")
+	if feedURL == "" {
+		feedURL = defaultThreatFeedURL
+	}
+	var err error
+	threat, err = NewThreatStore(feedURL)
+	if err != nil {
+		log.Printf("threat store init failed, continuing without threat intel: %v", err)
+	} else {
+		threat.StartRefresh(ctx, feedURL)
 	}
 
 	r := kafka.NewReader(kafka.ReaderConfig{
@@ -109,13 +173,18 @@ func main() {
 			continue
 		}
 
-		e := enrich(flow, geo)
+		e := enrich(flow, geo, tenant, threat)
 
-		fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src_country=%s  dst_country=%s  src_asn=%d  dst_asn=%d\n",
+		threatFlag := ""
+		if e.IsThreatSrc || e.IsThreatDst {
+			threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
+		}
+		fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
 			e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
 			e.Proto, e.Bytes,
-			e.SrcGeo.CountryCode, e.DstGeo.CountryCode,
-			e.SrcGeo.ASN, e.DstGeo.ASN)
+			e.SrcGeo.CountryCode, e.SrcGeo.ASN,
+			e.DstGeo.CountryCode, e.DstGeo.ASN,
+			e.TenantID, threatFlag)
 	}
 
 	log.Println("shutting down")
