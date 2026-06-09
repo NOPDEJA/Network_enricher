@@ -59,6 +59,7 @@ func (s *ThreatStore) refresh(feedURL string) error {
 	s.mu.Lock()
 	s.ips = ips
 	s.mu.Unlock()
+	threatIPsLoaded.Set(float64(len(ips)))
 	log.Printf("threat feed loaded: %d IPs", len(ips))
 	return nil
 }
