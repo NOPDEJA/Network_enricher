@@ -12,9 +12,8 @@ nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] �
    (NetFlow v5)     (decode)    (raw-flows)    (this repo)
 ```
 
-> **Status:** early prototype. The dev stack and a Redpanda consumer are working;
-> the enrichment stages are being built out week by week. See
-> [Roadmap](#roadmap) for the full plan and what's done.
+> **Status:** early prototype — Week 3 complete. GeoIP + ASN enrichment is live.
+> See [Roadmap](#roadmap) for full plan and progress.
 
 ---
 
@@ -25,15 +24,23 @@ nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] �
 - **goflow2** decodes incoming NetFlow and publishes JSON flow records to the
   `raw-flows` Kafka topic on Redpanda.
 - **Go consumer** (`main.go`): reads `raw-flows`, deserializes each record into a
-  `FlowMessage`, and prints a one-line summary per flow. Shuts down cleanly on
-  SIGTERM / Ctrl+C.
+  `FlowMessage`, enriches it, and prints a one-line summary per flow. Shuts down
+  cleanly on SIGTERM / Ctrl+C.
+- **GeoIP + ASN enrichment** (`geoip.go`): every flow tagged with source/destination
+  country code, city, coordinates, ASN number, and ASN org name — using MaxMind
+  GeoLite2 mmdb files loaded in-memory. Hot-reloads the databases every 24 hours
+  without restarting. Private/RFC1918 addresses are labeled `"private"`;
+  unallocated bogon addresses are labeled `"unknown"`.
 
 ---
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) + Docker Compose
-- [Go](https://go.dev/dl/) 1.26+ (only needed to run/build the enricher locally)
+- [Go](https://go.dev/dl/) 1.21+
+- MaxMind GeoLite2 databases (free — sign up at [maxmind.com](https://www.maxmind.com))
+  - `GeoLite2-City.mmdb`
+  - `GeoLite2-ASN.mmdb`
 
 ---
 
@@ -53,14 +60,28 @@ the `raw-flows` topic.
 **2. Run the enricher**
 
 ```bash
+# With GeoIP enrichment enabled:
+export GEOIP_CITY_PATH=/path/to/GeoLite2-City.mmdb
+export GEOIP_ASN_PATH=/path/to/GeoLite2-ASN.mmdb
 go run .
 ```
 
-You should see flow records printed as they arrive:
+```powershell
+# PowerShell equivalent:
+$env:GEOIP_CITY_PATH="C:\path\to\GeoLite2-City.mmdb"
+$env:GEOIP_ASN_PATH="C:\path\to\GeoLite2-ASN.mmdb"
+go run .
+```
+
+GeoIP is **optional** — omit the env vars and the enricher starts without it.
+
+You should see enriched flow records printed as they arrive:
 
 ```
 connected to Redpanda, reading from raw-flows...
-10.0.0.5:443 → 192.168.1.20:51514  proto=TCP  etype=IPv4  bytes=1480  packets=2  exporter=172.18.0.4
+geoip loaded
+209.223.38.104:31534 → 77.27.22.123:8475  proto=TCP  bytes=666  src_country=US  dst_country=ES  src_asn=3561  dst_asn=12334
+10.154.20.12:9010    → 77.12.190.94:3306  proto=TCP  bytes=586  src_country=private  dst_country=DE  src_asn=0  dst_asn=6805
 ...
 ```
 
@@ -76,42 +97,50 @@ docker compose -f docker_compose.yml down
 
 ## Project layout
 
-| File                 | Purpose                                                        |
-|----------------------|---------------------------------------------------------------|
-| `main.go`            | Redpanda consumer + `FlowMessage` model (the enricher entry).  |
-| `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator.    |
-| `goflow2.yaml`       | Standalone goflow2 config (reference; not mounted by compose). |
-| `go.mod` / `go.sum`  | Go module definition and dependency checksums.                 |
-| `CLAUDE.md`          | Engineering guidelines for this project.                       |
-
-> **Note:** the running pipeline currently uses **JSON** as the flow format
-> (`-format=json` in compose, `json.Unmarshal` in `main.go`). `goflow2.yaml`
-> documents a Protobuf (`pb`) variant for later, when moving off JSON for
-> throughput.
+| File                 | Purpose                                                              |
+|----------------------|----------------------------------------------------------------------|
+| `main.go`            | Redpanda consumer, `FlowMessage` + `EnrichedFlow` models, `enrich()` wiring. |
+| `geoip.go`           | `GeoStore` — MaxMind mmdb lookup with `sync.RWMutex` hot-reload.    |
+| `geoip_test.go`      | Unit tests for private IP detection and GeoStore lookup behavior.    |
+| `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator.          |
+| `goflow2.yaml`       | Standalone goflow2 config (reference; not mounted by compose).       |
+| `go.mod` / `go.sum`  | Go module definition and dependency checksums.                       |
+| `CLAUDE.md`          | Engineering guidelines for this project.                             |
 
 ---
 
 ## Configuration
 
-Defaults currently live in `main.go` / `docker_compose.yml`:
+| Setting             | Default / Value          | How to set               |
+|---------------------|--------------------------|--------------------------|
+| Redpanda broker     | `localhost:9092`         | `main.go`                |
+| Consumer group      | `enricher-group`         | `main.go`                |
+| Topic               | `raw-flows`              | `main.go` / goflow2      |
+| NetFlow listeners   | `:2055`, `:4739`         | `docker_compose.yml`     |
+| Flow format         | `json`                   | `docker_compose.yml`     |
+| GeoIP city database | _(disabled if unset)_    | `GEOIP_CITY_PATH` env var |
+| GeoIP ASN database  | _(disabled if unset)_    | `GEOIP_ASN_PATH` env var  |
+| GeoIP refresh interval | 24 hours              | `geoip.go`               |
 
-| Setting           | Value             | Where                |
-|-------------------|-------------------|----------------------|
-| Redpanda broker   | `localhost:9092`  | `main.go`            |
-| Consumer group    | `enricher-group`  | `main.go`            |
-| Topic             | `raw-flows`       | `main.go` / goflow2  |
-| NetFlow listeners | `:2055`, `:4739`  | `docker_compose.yml` |
-| Flow format       | `json`            | `docker_compose.yml` |
+---
+
+## Running tests
+
+```bash
+go test ./...
+```
+
+Tests cover private IP detection and GeoStore lookup behavior. No mmdb files required.
 
 ---
 
 ## Roadmap
 
-The enricher is being built over an 8-week plan. Current progress:
+The enricher is being built over an 8-week intern plan. Current progress:
 
 - [x] **Week 1** — Go basics + Docker Compose dev stack
 - [x] **Week 2** — Redpanda consumer in Go (flows deserialized and printed)
-- [ ] **Week 3** — GeoIP + ASN enrichment (MaxMind mmdb, hot-reload, unit tests)
+- [x] **Week 3** — GeoIP + ASN enrichment (MaxMind mmdb, hot-reload, unit tests)
 - [ ] **Week 4** — Tenant mapping (CIDR radix tree) + threat intel + sFlow expansion
 - [ ] **Week 5** — ClickHouse schema + batched native-protocol writer
 - [ ] **Week 6** — Flow deduplication + graceful shutdown + Prometheus metrics
@@ -124,11 +153,11 @@ The enricher is being built over an 8-week plan. Current progress:
 
 ## Key design principles
 
-From `CLAUDE.md`:
-
 - **Fail open** — packet loss is worse than enrichment failure. If a lookup
   fails, log a metric and continue; never drop a flow.
 - **Stateless, fast enrichment** — flows are stateless records; per-flow
   enrichment must be fast, non-blocking, and idempotent.
 - **No blocking I/O in the hot path** — offload DNS/HTTP/DB to async workers.
 - **Bounded caches** — every lookup cache has a TTL and max size.
+- **Hot-reload without downtime** — lookup tables (GeoIP, tenant config, threat feed)
+  refresh in the background behind a `sync.RWMutex`; no restarts needed.
