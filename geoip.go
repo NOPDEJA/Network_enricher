@@ -79,6 +79,9 @@ func (g *GeoStore) Lookup(ip net.IP) GeoData {
 
 	if city, err := g.cityDB.City(ip); err == nil {
 		data.CountryCode = city.Country.IsoCode
+		if data.CountryCode == "" {
+			data.CountryCode = "unknown"
+		}
 		if len(city.City.Names) > 0 {
 			data.City = city.City.Names["en"]
 		}
