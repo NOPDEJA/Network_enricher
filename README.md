@@ -49,15 +49,15 @@ to remote clients (without this, a remote client connects and gets redirected to
 `localhost`, which fails):
 
 ```bash
-export REDPANDA_EXTERNAL_ADDR=192.168.1.50   # ← the infra machine's LAN IP
+export REDPANDA_EXTERNAL_ADDR=<INFRA_IP>   # ← the infra machine's LAN IP
 docker compose up -d
 ```
 
 **On the dev machine** — point the enricher at the infra machine:
 
 ```bash
-export REDPANDA_ADDR=192.168.1.50:9092
-export CLICKHOUSE_ADDR=192.168.1.50:9000
+export REDPANDA_ADDR=<INFRA_IP>:9092
+export CLICKHOUSE_ADDR=<INFRA_IP>:9000
 go run .
 ```
 
@@ -81,9 +81,9 @@ decodes and publishes JSON records to the `raw-flows` topic.
 # Minimal — no GeoIP, writes to stdout
 go run .
 
-# Full enrichment to ClickHouse (on a separate infra machine at 192.168.1.50):
-export REDPANDA_ADDR=192.168.1.50:9092
-export CLICKHOUSE_ADDR=192.168.1.50:9000
+# Full enrichment to ClickHouse (on a separate infra machine at <INFRA_IP>):
+export REDPANDA_ADDR=<INFRA_IP>:9092
+export CLICKHOUSE_ADDR=<INFRA_IP>:9000
 export GEOIP_CITY_PATH=/path/to/GeoLite2-City.mmdb
 export GEOIP_ASN_PATH=/path/to/GeoLite2-ASN.mmdb
 export TENANT_CONFIG_PATH=/path/to/tenants.yaml
@@ -92,8 +92,8 @@ go run .
 
 ```powershell
 # PowerShell equivalent:
-$env:REDPANDA_ADDR="192.168.1.50:9092"
-$env:CLICKHOUSE_ADDR="192.168.1.50:9000"
+$env:REDPANDA_ADDR="<INFRA_IP>:9092"
+$env:CLICKHOUSE_ADDR="<INFRA_IP>:9000"
 $env:GEOIP_CITY_PATH="C:\path\to\GeoLite2-City.mmdb"
 $env:GEOIP_ASN_PATH="C:\path\to\GeoLite2-ASN.mmdb"
 go run .
