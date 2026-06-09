@@ -98,6 +98,13 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 	return e
 }
 
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -148,6 +155,25 @@ func main() {
 		threat.StartRefresh(ctx, feedURL)
 	}
 
+	// ClickHouse batch writer — optional, set CLICKHOUSE_ADDR to enable.
+	var writer *BatchWriter
+	chAddr := os.Getenv("CLICKHOUSE_ADDR")
+	if chAddr == "" {
+		chAddr = "localhost:9000"
+	}
+	writer, err = NewBatchWriter(
+		chAddr,
+		getenv("CLICKHOUSE_DB", "default"),
+		getenv("CLICKHOUSE_USER", "default"),
+		os.Getenv("CLICKHOUSE_PASSWORD"),
+	)
+	if err != nil {
+		log.Printf("clickhouse init failed, continuing without ClickHouse: %v", err)
+		writer = nil
+	} else {
+		writer.StartFlushTimer(ctx)
+	}
+
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: []string{"localhost:9092"},
 		GroupID: "enricher-group",
@@ -175,16 +201,20 @@ func main() {
 
 		e := enrich(flow, geo, tenant, threat)
 
-		threatFlag := ""
-		if e.IsThreatSrc || e.IsThreatDst {
-			threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
+		if writer != nil {
+			writer.Add(toFlowRow(e))
+		} else {
+			threatFlag := ""
+			if e.IsThreatSrc || e.IsThreatDst {
+				threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
+			}
+			fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
+				e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
+				e.Proto, e.Bytes,
+				e.SrcGeo.CountryCode, e.SrcGeo.ASN,
+				e.DstGeo.CountryCode, e.DstGeo.ASN,
+				e.TenantID, threatFlag)
 		}
-		fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
-			e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
-			e.Proto, e.Bytes,
-			e.SrcGeo.CountryCode, e.SrcGeo.ASN,
-			e.DstGeo.CountryCode, e.DstGeo.ASN,
-			e.TenantID, threatFlag)
 	}
 
 	log.Println("shutting down")
