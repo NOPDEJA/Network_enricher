@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 )
@@ -105,6 +107,15 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+func intEnv(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -174,6 +185,14 @@ func main() {
 		writer.StartFlushTimer(ctx)
 	}
 
+	dedup := NewDedupStore(
+		intEnv("DEDUP_SIZE", 1_000_000),
+		time.Duration(intEnv("DEDUP_TTL_SECONDS", 60))*time.Second,
+	)
+
+	registerMetrics()
+	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
+
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: []string{"localhost:9092"},
 		GroupID: "enricher-group",
@@ -199,7 +218,21 @@ func main() {
 			continue
 		}
 
+		flowsReceived.Inc()
+
+		if dedup.IsDuplicate(flow) {
+			flowsDeduplicated.Inc()
+			continue
+		}
+
 		e := enrich(flow, geo, tenant, threat)
+
+		if e.IsThreatSrc {
+			threatHits.WithLabelValues("src").Inc()
+		}
+		if e.IsThreatDst {
+			threatHits.WithLabelValues("dst").Inc()
+		}
 
 		if writer != nil {
 			writer.Add(toFlowRow(e))
@@ -215,6 +248,7 @@ func main() {
 				e.DstGeo.CountryCode, e.DstGeo.ASN,
 				e.TenantID, threatFlag)
 		}
+		flowsWritten.Inc()
 	}
 
 	log.Println("shutting down")

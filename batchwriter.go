@@ -283,6 +283,8 @@ func (w *BatchWriter) flush() {
 		log.Printf("clickhouse batch send: %v", err)
 		return
 	}
+	chFlushes.Inc()
+	chRowsWritten.Add(float64(len(rows)))
 	log.Printf("clickhouse: flushed %d rows", len(rows))
 }
 
