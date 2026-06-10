@@ -213,9 +213,9 @@ Benchmark baselines on Intel i7-12650H:
 
 | Benchmark | ns/op | allocs/op |
 |---|---|---|
-| `BenchmarkEnrich` (nil stores) | 42 | 0 |
-| `BenchmarkDedupHit` | 159 | 0 |
-| `BenchmarkDedupMiss` | 2,692 | 1 |
+| `BenchmarkEnrich` (nil stores) | 45 | 0 |
+| `BenchmarkDedupHit` | 91 | 0 |
+| `BenchmarkDedupMiss` | 1,338 | 1 |
 
 ---
 
