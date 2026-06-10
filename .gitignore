@@ -3,3 +3,7 @@
 *.mmdb
 geoip/
 .env
+
+# Local-only: internal docs and the personal run script (contains infra IP + password)
+HOW_IT_WORKS.md
+run.ps1
