@@ -69,13 +69,19 @@ type EnrichedFlow struct {
 func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore) EnrichedFlow {
 	e := EnrichedFlow{FlowMessage: flow}
 
-	if geo != nil {
-		e.SrcGeo = geo.Lookup(net.ParseIP(flow.SrcAddr))
-		e.DstGeo = geo.Lookup(net.ParseIP(flow.DstAddr))
-	}
+	// Parse once and share across enrichers — ParseIP allocates, so skip it
+	// entirely when no enricher needs it.
+	if geo != nil || tenant != nil {
+		srcIP := net.ParseIP(flow.SrcAddr)
 
-	if tenant != nil {
-		e.TenantID, e.TenantName = tenant.Lookup(net.ParseIP(flow.SrcAddr))
+		if geo != nil {
+			e.SrcGeo = geo.Lookup(srcIP)
+			e.DstGeo = geo.Lookup(net.ParseIP(flow.DstAddr))
+		}
+
+		if tenant != nil {
+			e.TenantID, e.TenantName = tenant.Lookup(srcIP)
+		}
 	}
 
 	if threat != nil {
@@ -265,5 +271,8 @@ func main() {
 
 	close(flowChan)
 	wg.Wait()
+	if writer != nil {
+		writer.flush() // drain rows added by workers after the flush timer stopped
+	}
 	log.Println("shutting down")
 }

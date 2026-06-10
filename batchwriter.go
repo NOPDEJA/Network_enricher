@@ -289,7 +289,8 @@ func (w *BatchWriter) flush() {
 }
 
 // StartFlushTimer flushes on a time trigger (whichever fires first: count or timer).
-// On shutdown (ctx.Done), performs one final flush to drain the buffer.
+// The final drain on shutdown is main's job (after the workers exit) — flushing
+// here on ctx.Done would race with workers still calling Add.
 func (w *BatchWriter) StartFlushTimer(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(w.maxAge)
@@ -297,7 +298,6 @@ func (w *BatchWriter) StartFlushTimer(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				w.flush()
 				return
 			case <-ticker.C:
 				w.flush()
