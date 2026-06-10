@@ -49,8 +49,11 @@ to remote clients (without this, a remote client connects and gets redirected to
 `localhost`, which fails):
 
 ```bash
-export REDPANDA_EXTERNAL_ADDR=<INFRA_IP>   # ← the infra machine's LAN IP
-docker compose up -d
+cat > .env <<EOF
+REDPANDA_EXTERNAL_ADDR=<INFRA_IP>          # ← the infra machine's LAN IP
+CLICKHOUSE_PASSWORD=<choose-a-password>    # empty passwords are rejected for remote connections
+EOF
+docker compose -f docker_compose.yml up -d
 ```
 
 **On the dev machine** — point the enricher at the infra machine:
@@ -58,6 +61,7 @@ docker compose up -d
 ```bash
 export REDPANDA_ADDR=<INFRA_IP>:9092
 export CLICKHOUSE_ADDR=<INFRA_IP>:9000
+export CLICKHOUSE_PASSWORD=<same-password>
 go run .
 ```
 

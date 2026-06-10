@@ -21,7 +21,11 @@ services:
       - "9000:9000"
     environment:
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
+      # Recent clickhouse-server images reject empty passwords for remote
+      # connections — set CLICKHOUSE_PASSWORD in .env (see README).
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-enricher_dev}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
 
   goflow2:
     image: netsampler/goflow2:latest
@@ -48,3 +52,6 @@ services:
     depends_on:
       - goflow2
     restart: on-failure
+
+volumes:
+  clickhouse-data:
