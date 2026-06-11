@@ -170,6 +170,7 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `THREAT_FEED_URL` | Feodo Tracker CSV | Override threat intel feed URL |
 | `DEDUP_SIZE` | `1000000` | Max entries in the dedup LRU |
 | `DEDUP_TTL_SECONDS` | `60` | Seconds before a flow 7-tuple expires from dedup |
+| `DEDUP_DISABLE` | `false` | Bypass dedup entirely (load-test only — lets every flow reach enrich+write) |
 | `ENRICH_WORKERS` | `runtime.NumCPU()` | Number of parallel enrichment workers |
 | `METRICS_ADDR` | `:9090` | Address for Prometheus `/metrics` and pprof |
 

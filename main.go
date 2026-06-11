@@ -127,6 +127,15 @@ func intEnv(key string, fallback int) int {
 	return fallback
 }
 
+func boolEnv(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return fallback
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -200,6 +209,13 @@ func main() {
 		intEnv("DEDUP_SIZE", 1_000_000),
 		time.Duration(intEnv("DEDUP_TTL_SECONDS", 60))*time.Second,
 	)
+	// DEDUP_DISABLE=true bypasses dedup so every flow reaches enrich+write —
+	// used for load testing the write path when a low-cardinality generator
+	// would otherwise dedup ~90% of flows. Not for production.
+	dedupEnabled := !boolEnv("DEDUP_DISABLE", false)
+	if !dedupEnabled {
+		log.Println("DEDUP_DISABLE set — dedup bypassed (load-test mode)")
+	}
 
 	registerMetrics()
 	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
@@ -227,7 +243,7 @@ func main() {
 				// simultaneous duplicates can both pass once. Acceptable for a
 				// TTL-bounded dedup — we never drop a real flow, only fail to
 				// catch a rare duplicate.
-				if dedup.IsDuplicate(flow) {
+				if dedupEnabled && dedup.IsDuplicate(flow) {
 					flowsDeduplicated.Inc()
 					continue
 				}
