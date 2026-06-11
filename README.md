@@ -144,7 +144,10 @@ docker compose -f docker_compose.yml down
 | `dedup_test.go` | Unit tests for dedup hit/miss, TTL expiry, exporter distinction |
 | `batchwriter.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL |
 | `metrics.go` | Prometheus counters/gauge definitions, `/metrics` + pprof HTTP server |
+| `enrich_test.go` | Unit tests for sampling expansion (sFlow + NetFlow/IPFIX) |
 | `bench_test.go` | Benchmarks for `enrich()`, dedup hit, dedup miss |
+| `loadtest_test.go` | Per-stage load-test benchmarks: JSON decode, real-store enrich, serial + parallel consume path |
+| `cmd/loadgen/` | Standalone producer that floods `raw-flows` with high-cardinality synthetic NetFlow for end-to-end load testing |
 | `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator |
 | `go.mod` / `go.sum` | Module definition and dependency checksums |
 | `CLAUDE.md` | Engineering guidelines for this project |
@@ -219,9 +222,28 @@ Benchmark baselines on Intel i7-12650H:
 
 | Benchmark | ns/op | allocs/op |
 |---|---|---|
-| `BenchmarkEnrich` (nil stores) | 45 | 0 |
-| `BenchmarkDedupHit` | 91 | 0 |
-| `BenchmarkDedupMiss` | 1,338 | 1 |
+| `BenchmarkEnrich` (nil stores) | 52 | 0 |
+| `BenchmarkEnrichRealStores` (GeoIP + tenant) | 1,293 | 7 |
+| `BenchmarkDedupHit` | 87 | 0 |
+| `BenchmarkDedupMiss` | 1,408 | 1 |
+| `BenchmarkUnmarshal` | 7,268 | 12 |
+| `BenchmarkConsumePath` (serial) | 9,431 | 19 |
+| `BenchmarkConsumePathParallel` (16 threads) | 3,331 | 16 |
+
+### End-to-end throughput
+
+Micro-benchmarks measure CPU only; the real ceiling was found by flooding
+`raw-flows` with `cmd/loadgen` and measuring `enricher_flows_received_total`
+against the live ThinkBook stack. The dominant cost was **not** CPU but the
+Kafka reader committing offsets synchronously per message (one broker
+round-trip each). Setting `CommitInterval` took sustained throughput from
+**~58 → ~20,000 flows/s** (~28k peak draining a backlog). The enricher is now
+CPU/GC-bound — `encoding/json` allocations and GC dominate the profile.
+
+```bash
+# Flood the topic, then run the enricher and watch the receive rate:
+go run ./cmd/loadgen -addr <ip>:9092 -count 5000000
+```
 
 ---
 
@@ -277,7 +299,7 @@ Items that are fine for a PoC but need work before real traffic.
 ### Reliability
 | Gap | Current state | Production fix |
 |---|---|---|
-| Kafka offset auto-commit | Offsets committed before ClickHouse flush succeeds — crash between the two loses flows | Commit offsets only after `batch.Send()` returns nil |
+| Kafka offset auto-commit | `CommitInterval=1s` commits offsets ~1s after read, before the ClickHouse flush succeeds — a crash can re-deliver (dedup absorbs it) but the model is read-committed, not write-committed | Commit offsets only after `batch.Send()` returns nil for true at-least-once to ClickHouse |
 | No dead-letter queue | Unmarshal failures are logged and dropped | Publish bad messages to a `raw-flows-dlq` topic for inspection |
 | Single instance | One enricher process — no HA | Run 2+ replicas; Kafka consumer group handles partition distribution automatically |
 | ClickHouse reconnect | `NewBatchWriter` fails fast on startup; no retry | Retry with backoff, or crash and let the container orchestrator restart |
