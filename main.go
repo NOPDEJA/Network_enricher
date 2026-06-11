@@ -278,6 +278,16 @@ func main() {
 		Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
 		GroupID: "enricher-group",
 		Topic:   "raw-flows",
+		// Without CommitInterval, ReadMessage commits the offset synchronously
+		// after every message — one broker round-trip per flow, which throttles
+		// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
+		// on an interval instead. On crash this can re-deliver the last <1s of
+		// offsets, but dedup absorbs that and flows are never lost.
+		CommitInterval: time.Second,
+		// Let the broker return a batch of records per fetch rather than dribbling
+		// them out, so the reader goroutine isn't round-trip bound.
+		MinBytes: 10e3, // 10 KB
+		MaxBytes: 10e6, // 10 MB
 	})
 	defer r.Close()
 
