@@ -97,9 +97,12 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 		}
 	}
 
-	// sFlow: multiply sampled byte/packet counts by the sampling rate.
-	// Type "SFLOW_5" is goflow2's JSON representation of the sFlow v5 enum.
-	if flow.Type == "SFLOW_5" && flow.SamplingRate > 1 {
+	// Expand sampled counts by the sampling rate. This applies to sFlow
+	// (Type "SFLOW_5") and to sampled NetFlow v9 / IPFIX alike — goflow2
+	// reports the per-flow SamplingRate from the options template for all of
+	// them, so gate on the rate rather than the flow type. A rate of 0 or 1
+	// means unsampled (or rate unknown), so leave the counts untouched.
+	if flow.SamplingRate > 1 {
 		e.IsSampled = true
 		e.ExpandedBytes = flow.Bytes * flow.SamplingRate
 		e.ExpandedPackets = flow.Packets * flow.SamplingRate
