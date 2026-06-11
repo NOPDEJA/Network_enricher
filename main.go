@@ -205,12 +205,33 @@ func main() {
 	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
 
 	workerCount := intEnv("ENRICH_WORKERS", runtime.NumCPU())
-	flowChan := make(chan FlowMessage, workerCount*100)
+	// The channel carries raw Kafka payloads, not parsed flows: JSON decode and
+	// dedup are the heaviest serial costs, so they run inside the worker pool to
+	// spread across all cores rather than bottlenecking the single reader.
+	rawChan := make(chan []byte, workerCount*100)
 
 	var wg sync.WaitGroup
 	for range workerCount {
 		wg.Go(func() {
-			for flow := range flowChan {
+			for raw := range rawChan {
+				var flow FlowMessage
+				if err := json.Unmarshal(raw, &flow); err != nil {
+					log.Printf("unmarshal error: %v", err)
+					continue
+				}
+
+				flowsReceived.Inc()
+
+				// Best-effort dedup: the LRU is concurrency-safe, but the
+				// Get-then-Add across workers has a small race window where two
+				// simultaneous duplicates can both pass once. Acceptable for a
+				// TTL-bounded dedup — we never drop a real flow, only fail to
+				// catch a rare duplicate.
+				if dedup.IsDuplicate(flow) {
+					flowsDeduplicated.Inc()
+					continue
+				}
+
 				e := enrich(flow, geo, tenant, threat)
 				if e.IsThreatSrc {
 					threatHits.WithLabelValues("src").Inc()
@@ -256,23 +277,12 @@ func main() {
 			continue
 		}
 
-		var flow FlowMessage
-		if err := json.Unmarshal(msg.Value, &flow); err != nil {
-			log.Printf("unmarshal error: %v", err)
-			continue
-		}
-
-		flowsReceived.Inc()
-
-		if dedup.IsDuplicate(flow) {
-			flowsDeduplicated.Inc()
-			continue
-		}
-
-		flowChan <- flow
+		// kafka-go allocates a fresh Value per message, so it is safe to hand
+		// the slice to a worker goroutine without copying.
+		rawChan <- msg.Value
 	}
 
-	close(flowChan)
+	close(rawChan)
 	wg.Wait()
 	if writer != nil {
 		writer.flush() // drain rows added by workers after the flush timer stopped
