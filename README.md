@@ -25,7 +25,7 @@ Redpanda (raw-flows)
               ├─► GeoIP + ASN  (MaxMind GeoLite2, hot-reload 24 h)
               ├─► Threat intel (Feodo Tracker CSV, hot-reload 1 h)
               ├─► Tenant mapping (CIDR radix tree, hot-reload 5 min)
-              └─► sFlow expansion (bytes × sampling_rate)
+              └─► Sampling expansion (bytes × sampling_rate, sFlow + sampled NetFlow/IPFIX)
                     └─► BatchWriter → ClickHouse (50 k rows or 1 s, whichever first)
 ```
 
@@ -75,9 +75,10 @@ go run .
 docker compose -f docker_compose.yml up -d
 ```
 
-Starts Redpanda (`:9092`), ClickHouse (`:9000` / `:8123`), goflow2 (`:2055` UDP),
-and nflow-generator. The generator immediately sends NetFlow v5 to goflow2, which
-decodes and publishes JSON records to the `raw-flows` topic.
+Starts Redpanda (`:9092`), ClickHouse (`:9000` / `:8123`), goflow2 (NetFlow/IPFIX
+on `:2055` + `:4739` UDP, sFlow on `:6343` UDP), and nflow-generator. The generator
+immediately sends NetFlow v5 to goflow2, which decodes and publishes JSON records
+to the `raw-flows` topic.
 
 **2. Run the enricher**
 

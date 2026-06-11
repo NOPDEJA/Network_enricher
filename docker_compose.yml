@@ -32,8 +32,9 @@ services:
     ports:
       - "2055:2055/udp"
       - "4739:4739/udp"
+      - "6343:6343/udp"
     command:
-      - -listen=netflow://:2055,netflow://:4739
+      - -listen=netflow://:2055,netflow://:4739,sflow://:6343
       - -transport=kafka
       - -transport.kafka.brokers=redpanda:29092
       - -transport.kafka.topic=raw-flows
