@@ -20,8 +20,10 @@ nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] �
 
 ```
 Redpanda (raw-flows)
-  └─► Dedup (LRU, 7-tuple, 60 s TTL)
-        └─► Worker pool (N × NumCPU goroutines)
+  └─► Reader pool (KAFKA_READERS readers in one consumer group, split across partitions)
+        └─► Worker pool (ENRICH_WORKERS goroutines)
+              ├─► JSON decode (goccy/go-json)
+              ├─► Dedup (16-shard LRU, 7-tuple, 60 s TTL)
               ├─► GeoIP + ASN  (MaxMind GeoLite2, hot-reload 24 h)
               ├─► Threat intel (Feodo Tracker CSV, hot-reload 1 h)
               ├─► Tenant mapping (CIDR radix tree, hot-reload 5 min)
@@ -29,12 +31,15 @@ Redpanda (raw-flows)
                     └─► BatchWriter → ClickHouse (50 k rows or 1 s, whichever first)
 ```
 
+Decode and dedup run *inside* the worker pool (not on the reader), so they spread
+across all cores rather than bottlenecking a single goroutine.
+
 ---
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) + Docker Compose
-- [Go](https://go.dev/dl/) 1.24+
+- [Go](https://go.dev/dl/) 1.26+
 - MaxMind GeoLite2 databases (free — sign up at [maxmind.com](https://www.maxmind.com))
   - `GeoLite2-City.mmdb`
   - `GeoLite2-ASN.mmdb`
@@ -108,7 +113,7 @@ Startup output:
 
 ```
 metrics server listening on :9090
-connected to Redpanda, reading from raw-flows (workers=16)...
+connected to Redpanda, reading from raw-flows (readers=1, workers=16)...
 geoip loaded
 tenant config loaded
 threat feed loaded: 1423 IPs
@@ -140,7 +145,7 @@ docker compose -f docker_compose.yml down
 | `tenant_test.go` | Unit tests for CIDR lookup and longest-prefix matching |
 | `threat.go` | `ThreatStore` — Feodo Tracker CSV download, IP→label map, hot-reload |
 | `threat_test.go` | Unit tests for threat label lookup and CSV parsing |
-| `dedup.go` | `DedupStore` — 7-tuple LRU dedup with TTL (hashicorp/golang-lru v2) |
+| `dedup.go` | `DedupStore` — 7-tuple dedup, 16-shard LRU with TTL (hashicorp/golang-lru v2) |
 | `dedup_test.go` | Unit tests for dedup hit/miss, TTL expiry, exporter distinction |
 | `batchwriter.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL |
 | `metrics.go` | Prometheus counters/gauge definitions, `/metrics` + pprof HTTP server |
@@ -175,6 +180,7 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `DEDUP_TTL_SECONDS` | `60` | Seconds before a flow 7-tuple expires from dedup |
 | `DEDUP_DISABLE` | `false` | Bypass dedup entirely (load-test only — lets every flow reach enrich+write) |
 | `ENRICH_WORKERS` | `runtime.NumCPU()` | Number of parallel enrichment workers |
+| `KAFKA_READERS` | `1` | Kafka reader goroutines in the consumer group; set ≥ partitions of `raw-flows` to parallelize ingest |
 | `METRICS_ADDR` | `:9090` | Address for Prometheus `/metrics` and pprof |
 
 ### Tenant config format (`tenants.yaml`)
@@ -222,26 +228,49 @@ Benchmark baselines on Intel i7-12650H:
 
 | Benchmark | ns/op | allocs/op |
 |---|---|---|
-| `BenchmarkEnrich` (nil stores) | 52 | 0 |
-| `BenchmarkEnrichRealStores` (GeoIP + tenant) | 1,293 | 7 |
-| `BenchmarkDedupHit` | 87 | 0 |
-| `BenchmarkDedupMiss` | 1,408 | 1 |
-| `BenchmarkUnmarshal` | 7,268 | 12 |
-| `BenchmarkConsumePath` (serial) | 9,431 | 19 |
-| `BenchmarkConsumePathParallel` (16 threads) | 3,331 | 16 |
+| `BenchmarkEnrich` (nil stores) | 40 | 0 |
+| `BenchmarkEnrichRealStores` (GeoIP + tenant) | 1,096 | 7 |
+| `BenchmarkDedupHit` | 145 | 0 |
+| `BenchmarkDedupMiss` | 1,237 | 1 |
+| `BenchmarkDedupMissParallel` (16 threads) | 97 | 0 |
+| `BenchmarkUnmarshal` | 1,574 | 2 |
+| `BenchmarkConsumePath` (serial) | 3,330 | 9 |
+| `BenchmarkConsumePathParallel` (16 threads) | 1,245 | 6 |
+
+JSON decode uses `goccy/go-json` (12→2 allocs vs `encoding/json`); the dedup LRU
+is 16-shard so `DedupMissParallel` *improves* with core count instead of
+contending on one lock. The parallel consume path at ~1.25 µs/flow implies a
+**~800k flows/s CPU ceiling** on this machine — the real-world limit is the
+broker/network/ClickHouse, not enricher CPU (see below).
 
 ### End-to-end throughput
 
 Micro-benchmarks measure CPU only; the real ceiling was found by flooding
-`raw-flows` with `cmd/loadgen` and measuring `enricher_flows_received_total`
-against the live ThinkBook stack. The dominant cost was **not** CPU but the
-Kafka reader committing offsets synchronously per message (one broker
-round-trip each). Setting `CommitInterval` took sustained throughput from
-**~58 → ~20,000 flows/s** (~28k peak draining a backlog). The enricher is now
-CPU/GC-bound — `encoding/json` allocations and GC dominate the profile.
+`raw-flows` with `cmd/loadgen` and measuring `enricher_flows_received_total`.
+Two bottlenecks were found and removed, in order:
+
+1. **Synchronous offset commit** — the Kafka reader committed offsets per message
+   (one broker round-trip each), capping throughput at **~58 flows/s**. Setting
+   `CommitInterval` took it to **~20k flows/s**.
+2. **The network transport** — measuring from a dev machine across **Wi-Fi**
+   capped the pipeline at **~22k flows/s** (≈100 Mbps ÷ ~550 B/flow), *regardless
+   of code or broker cores*. This masked all CPU work.
+
+Run **co-located with the broker** (or over wired gigabit) and the real numbers
+appear. On a single ThinkBook (Redpanda `--smp 4`, `raw-flows` = 12 partitions,
+enricher `KAFKA_READERS=8`), full pipeline to ClickHouse:
+
+| Setup | Throughput |
+|---|---|
+| enricher + 1 producer (steady state) | **~108k flows/s** @ ~25% CPU |
+| enricher flat-out (drain a backlog) | **~365k flows/s** |
+
+The enricher is **not** the limiter — at 108k/s it sat at ~25% CPU. The path to
+more is more producers/partitions and a provisioned ClickHouse.
 
 ```bash
-# Flood the topic, then run the enricher and watch the receive rate:
+# Flood the topic, then run the enricher and watch the receive rate.
+# Run BOTH on/near the broker — over Wi-Fi you only measure the Wi-Fi link.
 go run ./cmd/loadgen -addr <ip>:9092 -count 5000000
 ```
 
