@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
+
+	// Match main.go's decoder so these benchmarks measure the production path.
+	json "github.com/goccy/go-json"
 )
 
 // Load test for the in-process consume path: decode -> dedup -> enrich ->

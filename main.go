@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,6 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	// goccy/go-json is a drop-in replacement for encoding/json that decodes the
+	// goflow2 record with far fewer allocations — the JSON decode and its GC
+	// pressure were the top per-flow CPU cost in the worker pool (see Unmarshal
+	// benchmark). API-compatible, so call sites stay json.Unmarshal.
+	json "github.com/goccy/go-json"
 	"github.com/segmentio/kafka-go"
 )
 
