@@ -278,40 +278,51 @@ func main() {
 		})
 	}
 
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
-		GroupID: "enricher-group",
-		Topic:   "raw-flows",
-		// Without CommitInterval, ReadMessage commits the offset synchronously
-		// after every message — one broker round-trip per flow, which throttles
-		// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
-		// on an interval instead. On crash this can re-deliver the last <1s of
-		// offsets, but dedup absorbs that and flows are never lost.
-		CommitInterval: time.Second,
-		// Let the broker return a batch of records per fetch rather than dribbling
-		// them out, so the reader goroutine isn't round-trip bound.
-		MinBytes: 10e3, // 10 KB
-		MaxBytes: 10e6, // 10 MB
-	})
-	defer r.Close()
-
-	log.Printf("connected to Redpanda, reading from raw-flows (workers=%d)...", workerCount)
-
-	for {
-		msg, err := r.ReadMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				break
+	// Reader pool. A consumer group lets multiple readers split the topic's
+	// partitions and fetch in parallel: with one partition a single reader does
+	// all the work, but once raw-flows is partitioned, KAFKA_READERS readers in
+	// the same group lift the single-reader fetch ceiling (under load the workers
+	// were starved waiting on one reader). Each reader owns its connection; the
+	// group coordinator assigns partitions and rebalances automatically.
+	readerCount := intEnv("KAFKA_READERS", 1)
+	var readerWg sync.WaitGroup
+	for range readerCount {
+		r := kafka.NewReader(kafka.ReaderConfig{
+			Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
+			GroupID: "enricher-group",
+			Topic:   "raw-flows",
+			// Without CommitInterval, ReadMessage commits the offset synchronously
+			// after every message — one broker round-trip per flow, which throttles
+			// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
+			// on an interval instead. On crash this can re-deliver the last <1s of
+			// offsets, but dedup absorbs that and flows are never lost.
+			CommitInterval: time.Second,
+			// Let the broker return a batch of records per fetch rather than dribbling
+			// them out, so the reader goroutine isn't round-trip bound.
+			MinBytes: 10e3, // 10 KB
+			MaxBytes: 10e6, // 10 MB
+		})
+		readerWg.Go(func() {
+			defer r.Close()
+			for {
+				msg, err := r.ReadMessage(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Printf("read error: %v", err)
+					continue
+				}
+				// kafka-go allocates a fresh Value per message, so it is safe to
+				// hand the slice to a worker goroutine without copying.
+				rawChan <- msg.Value
 			}
-			log.Printf("read error: %v", err)
-			continue
-		}
-
-		// kafka-go allocates a fresh Value per message, so it is safe to hand
-		// the slice to a worker goroutine without copying.
-		rawChan <- msg.Value
+		})
 	}
 
+	log.Printf("connected to Redpanda, reading from raw-flows (readers=%d, workers=%d)...", readerCount, workerCount)
+
+	readerWg.Wait()
 	close(rawChan)
 	wg.Wait()
 	if writer != nil {
