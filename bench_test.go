@@ -47,3 +47,25 @@ func BenchmarkDedupHit(b *testing.B) {
 		d.IsDuplicate(flow)
 	}
 }
+
+// BenchmarkDedupMissParallel stresses dedup the way the worker pool does after
+// Fix A: every core calls IsDuplicate concurrently. With one shared LRU mutex
+// (Get+Add under a single lock) this saturates and ns/op stops improving with
+// more cores; sharding by 7-tuple hash should let it scale. Compare ns/op
+// before/after the sharding change at the same -cpu.
+func BenchmarkDedupMissParallel(b *testing.B) {
+	const pool = 1 << 16 // 65536 distinct 7-tuples
+	flows := make([]FlowMessage, pool)
+	for i := range flows {
+		flows[i] = sampleFlow(i)
+	}
+	d := NewDedupStore(pool, 60*time.Second)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			d.IsDuplicate(flows[i&(pool-1)])
+			i++
+		}
+	})
+}
