@@ -20,21 +20,26 @@ nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] �
 
 ```
 Redpanda (raw-flows)
-  └─► Dedup (LRU, 7-tuple, 60 s TTL)
-        └─► Worker pool (N × NumCPU goroutines)
+  └─► Reader pool (KAFKA_READERS readers in one consumer group, split across partitions)
+        └─► Worker pool (ENRICH_WORKERS goroutines)
+              ├─► JSON decode (goccy/go-json)
+              ├─► Dedup (16-shard LRU, 7-tuple, 60 s TTL)
               ├─► GeoIP + ASN  (MaxMind GeoLite2, hot-reload 24 h)
               ├─► Threat intel (Feodo Tracker CSV, hot-reload 1 h)
               ├─► Tenant mapping (CIDR radix tree, hot-reload 5 min)
-              └─► sFlow expansion (bytes × sampling_rate)
+              └─► Sampling expansion (bytes × sampling_rate, sFlow + sampled NetFlow/IPFIX)
                     └─► BatchWriter → ClickHouse (50 k rows or 1 s, whichever first)
 ```
+
+Decode and dedup run *inside* the worker pool (not on the reader), so they spread
+across all cores rather than bottlenecking a single goroutine.
 
 ---
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) + Docker Compose
-- [Go](https://go.dev/dl/) 1.24+
+- [Go](https://go.dev/dl/) 1.26+
 - MaxMind GeoLite2 databases (free — sign up at [maxmind.com](https://www.maxmind.com))
   - `GeoLite2-City.mmdb`
   - `GeoLite2-ASN.mmdb`
@@ -75,9 +80,10 @@ go run .
 docker compose -f docker_compose.yml up -d
 ```
 
-Starts Redpanda (`:9092`), ClickHouse (`:9000` / `:8123`), goflow2 (`:2055` UDP),
-and nflow-generator. The generator immediately sends NetFlow v5 to goflow2, which
-decodes and publishes JSON records to the `raw-flows` topic.
+Starts Redpanda (`:9092`), ClickHouse (`:9000` / `:8123`), goflow2 (NetFlow/IPFIX
+on `:2055` + `:4739` UDP, sFlow on `:6343` UDP), and nflow-generator. The generator
+immediately sends NetFlow v5 to goflow2, which decodes and publishes JSON records
+to the `raw-flows` topic.
 
 **2. Run the enricher**
 
@@ -107,7 +113,7 @@ Startup output:
 
 ```
 metrics server listening on :9090
-connected to Redpanda, reading from raw-flows (workers=16)...
+connected to Redpanda, reading from raw-flows (readers=1, workers=16)...
 geoip loaded
 tenant config loaded
 threat feed loaded: 1423 IPs
@@ -139,11 +145,15 @@ docker compose -f docker_compose.yml down
 | `tenant_test.go` | Unit tests for CIDR lookup and longest-prefix matching |
 | `threat.go` | `ThreatStore` — Feodo Tracker CSV download, IP→label map, hot-reload |
 | `threat_test.go` | Unit tests for threat label lookup and CSV parsing |
-| `dedup.go` | `DedupStore` — 7-tuple LRU dedup with TTL (hashicorp/golang-lru v2) |
+| `dedup.go` | `DedupStore` — 7-tuple dedup, 16-shard LRU with TTL (hashicorp/golang-lru v2) |
 | `dedup_test.go` | Unit tests for dedup hit/miss, TTL expiry, exporter distinction |
 | `batchwriter.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL |
 | `metrics.go` | Prometheus counters/gauge definitions, `/metrics` + pprof HTTP server |
+| `enrich_test.go` | Unit tests for sampling expansion (sFlow + NetFlow/IPFIX) |
 | `bench_test.go` | Benchmarks for `enrich()`, dedup hit, dedup miss |
+| `loadtest_test.go` | Per-stage load-test benchmarks: JSON decode, real-store enrich, serial + parallel consume path |
+| `cmd/loadgen/` | Standalone producer that floods `raw-flows` with high-cardinality synthetic NetFlow for end-to-end load testing |
+| `cmd/trace/` | Read-only forensic CLI: query ClickHouse for which internal host reached a given external destination around a time |
 | `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator |
 | `go.mod` / `go.sum` | Module definition and dependency checksums |
 | `CLAUDE.md` | Engineering guidelines for this project |
@@ -169,7 +179,9 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `THREAT_FEED_URL` | Feodo Tracker CSV | Override threat intel feed URL |
 | `DEDUP_SIZE` | `1000000` | Max entries in the dedup LRU |
 | `DEDUP_TTL_SECONDS` | `60` | Seconds before a flow 7-tuple expires from dedup |
+| `DEDUP_DISABLE` | `false` | Bypass dedup entirely (load-test only — lets every flow reach enrich+write) |
 | `ENRICH_WORKERS` | `runtime.NumCPU()` | Number of parallel enrichment workers |
+| `KAFKA_READERS` | `1` | Kafka reader goroutines in the consumer group; set ≥ partitions of `raw-flows` to parallelize ingest |
 | `METRICS_ADDR` | `:9090` | Address for Prometheus `/metrics` and pprof |
 
 ### Tenant config format (`tenants.yaml`)
@@ -203,6 +215,56 @@ Materialized views (`flows_1m_mv`, `flows_1h_mv`) populate the aggregate tables 
 
 ---
 
+## Forensic attribution (`cmd/trace`)
+
+`cmd/trace` is a read-only CLI that queries the `flows` table to answer:
+**"which internal host reached a given external destination (e.g. Facebook) around time T?"**
+It uses the same `CLICKHOUSE_*` env vars as the enricher.
+
+```bash
+# By friendly service name, ±15m around a time:
+go run ./cmd/trace -service facebook -around "2026-06-16 14:30:00" -window 15m
+
+# By ASN, explicit window, narrowed to one suspect source:
+go run ./cmd/trace -dst-asn 15169 -from "2026-06-16 00:00:00" -to "2026-06-16 23:59:59" -src-ip 10.3.7.21
+
+# By destination org substring (case-insensitive), as JSON lines:
+go run ./cmd/trace -dst-org cloudflare -around 2026-06-16 -json
+```
+
+Pick exactly one destination (`-service`, `-dst-asn`, `-dst-org`, `-dst-ip`) and one
+time window (`-around` + optional `-window`, default `10m`; or `-from`/`-to`).
+**All times — both the flags and the displayed timestamps — are UTC**, matching how
+ClickHouse stores flow timestamps (a window in the wrong zone would silently miss flows).
+`-service` resolves friendly names to ASNs (facebook/meta/instagram/whatsapp → 32934,
+google/youtube → 15169, cloudflare → 13335). It is equivalent to this hand-written SQL:
+
+```sql
+SELECT timestamp, src_ip, src_port, dst_ip, dst_port, protocol, bytes,
+       dst_asn, dst_org, exporter_ip, tenant_name
+FROM flows
+WHERE timestamp BETWEEN ? AND ?
+  AND dst_asn IN (?)          -- or positionCaseInsensitive(dst_org, ?) > 0, or dst_ip = ?
+ORDER BY timestamp
+LIMIT ?;
+```
+
+The time window drives partition pruning (`flows` is partitioned by day), so a bounded
+window keeps scans cheap. All user values are bound as `?` parameters — never
+string-concatenated — so `-dst-org`/`-src-ip` cannot inject SQL.
+
+**Limitations (read before acting on results):**
+- NetFlow proves a host opened a connection to a Facebook IP on `:443` — **not** which
+  page, post, or message. It is connection metadata, not content.
+- `-service` ASN mapping is a convenience; confirm e.g. `32934` is Facebook/Meta in your
+  GeoIP/ASN database before relying on it.
+- Sampled exporters (`sampling_rate > 1`) record only a fraction of flows, so absence of a
+  row is **not** proof a host did not connect.
+- **Identity mapping (IP → person) is out of scope.** `trace` answers *which internal IP*;
+  resolving that to a user is a separate, confidential join against DHCP/RADIUS records.
+
+---
+
 ## Running tests and benchmarks
 
 ```bash
@@ -217,9 +279,51 @@ Benchmark baselines on Intel i7-12650H:
 
 | Benchmark | ns/op | allocs/op |
 |---|---|---|
-| `BenchmarkEnrich` (nil stores) | 45 | 0 |
-| `BenchmarkDedupHit` | 91 | 0 |
-| `BenchmarkDedupMiss` | 1,338 | 1 |
+| `BenchmarkEnrich` (nil stores) | 40 | 0 |
+| `BenchmarkEnrichRealStores` (GeoIP + tenant) | 1,096 | 7 |
+| `BenchmarkDedupHit` | 145 | 0 |
+| `BenchmarkDedupMiss` | 1,237 | 1 |
+| `BenchmarkDedupMissParallel` (16 threads) | 97 | 0 |
+| `BenchmarkUnmarshal` | 1,574 | 2 |
+| `BenchmarkConsumePath` (serial) | 3,330 | 9 |
+| `BenchmarkConsumePathParallel` (16 threads) | 1,245 | 6 |
+
+JSON decode uses `goccy/go-json` (12→2 allocs vs `encoding/json`); the dedup LRU
+is 16-shard so `DedupMissParallel` *improves* with core count instead of
+contending on one lock. The parallel consume path at ~1.25 µs/flow implies a
+**~800k flows/s CPU ceiling** on this machine — the real-world limit is the
+broker/network/ClickHouse, not enricher CPU (see below).
+
+### End-to-end throughput
+
+Micro-benchmarks measure CPU only; the real ceiling was found by flooding
+`raw-flows` with `cmd/loadgen` and measuring `enricher_flows_received_total`.
+Two bottlenecks were found and removed, in order:
+
+1. **Synchronous offset commit** — the Kafka reader committed offsets per message
+   (one broker round-trip each), capping throughput at **~58 flows/s**. Setting
+   `CommitInterval` took it to **~20k flows/s**.
+2. **The network transport** — measuring from a dev machine across **Wi-Fi**
+   capped the pipeline at **~22k flows/s** (≈100 Mbps ÷ ~550 B/flow), *regardless
+   of code or broker cores*. This masked all CPU work.
+
+Run **co-located with the broker** (or over wired gigabit) and the real numbers
+appear. On a single ThinkBook (Redpanda `--smp 4`, `raw-flows` = 12 partitions,
+enricher `KAFKA_READERS=8`), full pipeline to ClickHouse:
+
+| Setup | Throughput |
+|---|---|
+| enricher + 1 producer (steady state) | **~108k flows/s** @ ~25% CPU |
+| enricher flat-out (drain a backlog) | **~365k flows/s** |
+
+The enricher is **not** the limiter — at 108k/s it sat at ~25% CPU. The path to
+more is more producers/partitions and a provisioned ClickHouse.
+
+```bash
+# Flood the topic, then run the enricher and watch the receive rate.
+# Run BOTH on/near the broker — over Wi-Fi you only measure the Wi-Fi link.
+go run ./cmd/loadgen -addr <ip>:9092 -count 5000000
+```
 
 ---
 
@@ -275,7 +379,7 @@ Items that are fine for a PoC but need work before real traffic.
 ### Reliability
 | Gap | Current state | Production fix |
 |---|---|---|
-| Kafka offset auto-commit | Offsets committed before ClickHouse flush succeeds — crash between the two loses flows | Commit offsets only after `batch.Send()` returns nil |
+| Kafka offset auto-commit | `CommitInterval=1s` commits offsets ~1s after read, before the ClickHouse flush succeeds — a crash can re-deliver (dedup absorbs it) but the model is read-committed, not write-committed | Commit offsets only after `batch.Send()` returns nil for true at-least-once to ClickHouse |
 | No dead-letter queue | Unmarshal failures are logged and dropped | Publish bad messages to a `raw-flows-dlq` topic for inspection |
 | Single instance | One enricher process — no HA | Run 2+ replicas; Kafka consumer group handles partition distribution automatically |
 | ClickHouse reconnect | `NewBatchWriter` fails fast on startup; no retry | Retry with backoff, or crash and let the container orchestrator restart |

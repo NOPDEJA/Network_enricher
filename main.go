@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,6 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	// goccy/go-json is a drop-in replacement for encoding/json that decodes the
+	// goflow2 record with far fewer allocations — the JSON decode and its GC
+	// pressure were the top per-flow CPU cost in the worker pool (see Unmarshal
+	// benchmark). API-compatible, so call sites stay json.Unmarshal.
+	json "github.com/goccy/go-json"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -97,9 +101,12 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 		}
 	}
 
-	// sFlow: multiply sampled byte/packet counts by the sampling rate.
-	// Type "SFLOW_5" is goflow2's JSON representation of the sFlow v5 enum.
-	if flow.Type == "SFLOW_5" && flow.SamplingRate > 1 {
+	// Expand sampled counts by the sampling rate. This applies to sFlow
+	// (Type "SFLOW_5") and to sampled NetFlow v9 / IPFIX alike — goflow2
+	// reports the per-flow SamplingRate from the options template for all of
+	// them, so gate on the rate rather than the flow type. A rate of 0 or 1
+	// means unsampled (or rate unknown), so leave the counts untouched.
+	if flow.SamplingRate > 1 {
 		e.IsSampled = true
 		e.ExpandedBytes = flow.Bytes * flow.SamplingRate
 		e.ExpandedPackets = flow.Packets * flow.SamplingRate
@@ -119,6 +126,15 @@ func intEnv(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func boolEnv(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback
@@ -197,17 +213,45 @@ func main() {
 		intEnv("DEDUP_SIZE", 1_000_000),
 		time.Duration(intEnv("DEDUP_TTL_SECONDS", 60))*time.Second,
 	)
+	// DEDUP_DISABLE=true bypasses dedup so every flow reaches enrich+write —
+	// used for load testing the write path when a low-cardinality generator
+	// would otherwise dedup ~90% of flows. Not for production.
+	dedupEnabled := !boolEnv("DEDUP_DISABLE", false)
+	if !dedupEnabled {
+		log.Println("DEDUP_DISABLE set — dedup bypassed (load-test mode)")
+	}
 
 	registerMetrics()
 	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
 
 	workerCount := intEnv("ENRICH_WORKERS", runtime.NumCPU())
-	flowChan := make(chan FlowMessage, workerCount*100)
+	// The channel carries raw Kafka payloads, not parsed flows: JSON decode and
+	// dedup are the heaviest serial costs, so they run inside the worker pool to
+	// spread across all cores rather than bottlenecking the single reader.
+	rawChan := make(chan []byte, workerCount*100)
 
 	var wg sync.WaitGroup
 	for range workerCount {
 		wg.Go(func() {
-			for flow := range flowChan {
+			for raw := range rawChan {
+				var flow FlowMessage
+				if err := json.Unmarshal(raw, &flow); err != nil {
+					log.Printf("unmarshal error: %v", err)
+					continue
+				}
+
+				flowsReceived.Inc()
+
+				// Best-effort dedup: the LRU is concurrency-safe, but the
+				// Get-then-Add across workers has a small race window where two
+				// simultaneous duplicates can both pass once. Acceptable for a
+				// TTL-bounded dedup — we never drop a real flow, only fail to
+				// catch a rare duplicate.
+				if dedupEnabled && dedup.IsDuplicate(flow) {
+					flowsDeduplicated.Inc()
+					continue
+				}
+
 				e := enrich(flow, geo, tenant, threat)
 				if e.IsThreatSrc {
 					threatHits.WithLabelValues("src").Inc()
@@ -234,42 +278,52 @@ func main() {
 		})
 	}
 
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
-		GroupID: "enricher-group",
-		Topic:   "raw-flows",
-	})
-	defer r.Close()
-
-	log.Printf("connected to Redpanda, reading from raw-flows (workers=%d)...", workerCount)
-
-	for {
-		msg, err := r.ReadMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				break
+	// Reader pool. A consumer group lets multiple readers split the topic's
+	// partitions and fetch in parallel: with one partition a single reader does
+	// all the work, but once raw-flows is partitioned, KAFKA_READERS readers in
+	// the same group lift the single-reader fetch ceiling (under load the workers
+	// were starved waiting on one reader). Each reader owns its connection; the
+	// group coordinator assigns partitions and rebalances automatically.
+	readerCount := intEnv("KAFKA_READERS", 1)
+	var readerWg sync.WaitGroup
+	for range readerCount {
+		r := kafka.NewReader(kafka.ReaderConfig{
+			Brokers: []string{getenv("REDPANDA_ADDR", "localhost:9092")},
+			GroupID: "enricher-group",
+			Topic:   "raw-flows",
+			// Without CommitInterval, ReadMessage commits the offset synchronously
+			// after every message — one broker round-trip per flow, which throttles
+			// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
+			// on an interval instead. On crash this can re-deliver the last <1s of
+			// offsets, but dedup absorbs that and flows are never lost.
+			CommitInterval: time.Second,
+			// Let the broker return a batch of records per fetch rather than dribbling
+			// them out, so the reader goroutine isn't round-trip bound.
+			MinBytes: 10e3, // 10 KB
+			MaxBytes: 10e6, // 10 MB
+		})
+		readerWg.Go(func() {
+			defer r.Close()
+			for {
+				msg, err := r.ReadMessage(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Printf("read error: %v", err)
+					continue
+				}
+				// kafka-go allocates a fresh Value per message, so it is safe to
+				// hand the slice to a worker goroutine without copying.
+				rawChan <- msg.Value
 			}
-			log.Printf("read error: %v", err)
-			continue
-		}
-
-		var flow FlowMessage
-		if err := json.Unmarshal(msg.Value, &flow); err != nil {
-			log.Printf("unmarshal error: %v", err)
-			continue
-		}
-
-		flowsReceived.Inc()
-
-		if dedup.IsDuplicate(flow) {
-			flowsDeduplicated.Inc()
-			continue
-		}
-
-		flowChan <- flow
+		})
 	}
 
-	close(flowChan)
+	log.Printf("connected to Redpanda, reading from raw-flows (readers=%d, workers=%d)...", readerCount, workerCount)
+
+	readerWg.Wait()
+	close(rawChan)
 	wg.Wait()
 	if writer != nil {
 		writer.flush() // drain rows added by workers after the flush timer stopped
