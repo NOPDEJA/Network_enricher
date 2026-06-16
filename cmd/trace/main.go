@@ -14,6 +14,10 @@
 // Connects with the same CLICKHOUSE_* env vars as the enricher
 // (CLICKHOUSE_ADDR, CLICKHOUSE_DB, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD).
 //
+// All time inputs (-around/-from/-to) and displayed timestamps are UTC, matching
+// how ClickHouse stores flow timestamps. A narrow window in the wrong zone would
+// silently miss flows, so this tool is UTC-only.
+//
 // Scope: trace answers *which internal IP*, not *who*. Mapping an IP to a person
 // is a separate, confidential join against DHCP/RADIUS records and is out of
 // scope here.
@@ -84,11 +88,13 @@ func resolveService(name string) ([]uint32, error) {
 
 var timeLayouts = []string{"2006-01-02 15:04:05", time.RFC3339, "2006-01-02"}
 
-// parseTime accepts a few human-friendly layouts, in local time.
+// parseTime accepts a few human-friendly layouts. Zone-less inputs are
+// interpreted as UTC (ClickHouse stores flow timestamps in UTC); an explicit
+// offset in an RFC3339 value is honored.
 func parseTime(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	for _, layout := range timeLayouts {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
 		}
 	}
@@ -156,10 +162,10 @@ func main() {
 		dstOrg  = flag.String("dst-org", "", "destination org substring (case-insensitive)")
 		dstIP   = flag.String("dst-ip", "", "exact destination IP")
 
-		around = flag.String("around", "", "center of the time window")
+		around = flag.String("around", "", "center of the time window (UTC)")
 		window = flag.Duration("window", 10*time.Minute, "half-width is window/2 each side of -around")
-		from   = flag.String("from", "", "window start (alternative to -around/-window)")
-		to     = flag.String("to", "", "window end (alternative to -around/-window)")
+		from   = flag.String("from", "", "window start, UTC (alternative to -around/-window)")
+		to     = flag.String("to", "", "window end, UTC (alternative to -around/-window)")
 
 		srcIP  = flag.String("src-ip", "", "narrow to a single source (suspect) IP")
 		limit  = flag.Int("limit", 1000, "max rows to return")
@@ -308,7 +314,7 @@ func render(rows chRows, asJSON bool) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIMESTAMP\tSRC_IP\tSPORT\tDST_IP\tDPORT\tPROTO\tBYTES\tDST_ASN\tDST_ORG\tEXPORTER\tTENANT")
+	fmt.Fprintln(tw, "TIMESTAMP(UTC)\tSRC_IP\tSPORT\tDST_IP\tDPORT\tPROTO\tBYTES\tDST_ASN\tDST_ORG\tEXPORTER\tTENANT")
 	count := 0
 	for rows.Next() {
 		var r row
@@ -332,6 +338,10 @@ func render(rows chRows, asJSON bool) error {
 }
 
 func scanRow(rows chRows, r *row) error {
-	return rows.Scan(&r.Timestamp, &r.SrcIP, &r.SrcPort, &r.DstIP, &r.DstPort,
-		&r.Protocol, &r.Bytes, &r.DstASN, &r.DstOrg, &r.ExporterIP, &r.TenantName)
+	if err := rows.Scan(&r.Timestamp, &r.SrcIP, &r.SrcPort, &r.DstIP, &r.DstPort,
+		&r.Protocol, &r.Bytes, &r.DstASN, &r.DstOrg, &r.ExporterIP, &r.TenantName); err != nil {
+		return err
+	}
+	r.Timestamp = r.Timestamp.UTC()
+	return nil
 }

@@ -60,6 +60,19 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
+// Zone-less input must be UTC, not the host's local zone — a 7h-offset window
+// would silently miss flows (ClickHouse stores timestamps in UTC).
+func TestParseTimeIsUTC(t *testing.T) {
+	got, err := parseTime("2026-06-11 08:00:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 6, 11, 8, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("got %v, want %v (UTC)", got, want)
+	}
+}
+
 func TestBuildQuery(t *testing.T) {
 	t0 := time.Date(2026, 6, 16, 14, 0, 0, 0, time.UTC)
 	t1 := time.Date(2026, 6, 16, 15, 0, 0, 0, time.UTC)

@@ -234,6 +234,8 @@ go run ./cmd/trace -dst-org cloudflare -around 2026-06-16 -json
 
 Pick exactly one destination (`-service`, `-dst-asn`, `-dst-org`, `-dst-ip`) and one
 time window (`-around` + optional `-window`, default `10m`; or `-from`/`-to`).
+**All times — both the flags and the displayed timestamps — are UTC**, matching how
+ClickHouse stores flow timestamps (a window in the wrong zone would silently miss flows).
 `-service` resolves friendly names to ASNs (facebook/meta/instagram/whatsapp → 32934,
 google/youtube → 15169, cloudflare → 13335). It is equivalent to this hand-written SQL:
 
