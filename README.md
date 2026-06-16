@@ -153,6 +153,7 @@ docker compose -f docker_compose.yml down
 | `bench_test.go` | Benchmarks for `enrich()`, dedup hit, dedup miss |
 | `loadtest_test.go` | Per-stage load-test benchmarks: JSON decode, real-store enrich, serial + parallel consume path |
 | `cmd/loadgen/` | Standalone producer that floods `raw-flows` with high-cardinality synthetic NetFlow for end-to-end load testing |
+| `cmd/trace/` | Read-only forensic CLI: query ClickHouse for which internal host reached a given external destination around a time |
 | `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator |
 | `go.mod` / `go.sum` | Module definition and dependency checksums |
 | `CLAUDE.md` | Engineering guidelines for this project |
@@ -211,6 +212,54 @@ The enricher auto-creates tables on startup (no manual DDL needed):
 | `flows_1h` | `SummingMergeTree` | Per-hour aggregates |
 
 Materialized views (`flows_1m_mv`, `flows_1h_mv`) populate the aggregate tables automatically.
+
+---
+
+## Forensic attribution (`cmd/trace`)
+
+`cmd/trace` is a read-only CLI that queries the `flows` table to answer:
+**"which internal host reached a given external destination (e.g. Facebook) around time T?"**
+It uses the same `CLICKHOUSE_*` env vars as the enricher.
+
+```bash
+# By friendly service name, ±15m around a time:
+go run ./cmd/trace -service facebook -around "2026-06-16 14:30:00" -window 15m
+
+# By ASN, explicit window, narrowed to one suspect source:
+go run ./cmd/trace -dst-asn 15169 -from "2026-06-16 00:00:00" -to "2026-06-16 23:59:59" -src-ip 10.3.7.21
+
+# By destination org substring (case-insensitive), as JSON lines:
+go run ./cmd/trace -dst-org cloudflare -around 2026-06-16 -json
+```
+
+Pick exactly one destination (`-service`, `-dst-asn`, `-dst-org`, `-dst-ip`) and one
+time window (`-around` + optional `-window`, default `10m`; or `-from`/`-to`).
+`-service` resolves friendly names to ASNs (facebook/meta/instagram/whatsapp → 32934,
+google/youtube → 15169, cloudflare → 13335). It is equivalent to this hand-written SQL:
+
+```sql
+SELECT timestamp, src_ip, src_port, dst_ip, dst_port, protocol, bytes,
+       dst_asn, dst_org, exporter_ip, tenant_name
+FROM flows
+WHERE timestamp BETWEEN ? AND ?
+  AND dst_asn IN (?)          -- or positionCaseInsensitive(dst_org, ?) > 0, or dst_ip = ?
+ORDER BY timestamp
+LIMIT ?;
+```
+
+The time window drives partition pruning (`flows` is partitioned by day), so a bounded
+window keeps scans cheap. All user values are bound as `?` parameters — never
+string-concatenated — so `-dst-org`/`-src-ip` cannot inject SQL.
+
+**Limitations (read before acting on results):**
+- NetFlow proves a host opened a connection to a Facebook IP on `:443` — **not** which
+  page, post, or message. It is connection metadata, not content.
+- `-service` ASN mapping is a convenience; confirm e.g. `32934` is Facebook/Meta in your
+  GeoIP/ASN database before relying on it.
+- Sampled exporters (`sampling_rate > 1`) record only a fraction of flows, so absence of a
+  row is **not** proof a host did not connect.
+- **Identity mapping (IP → person) is out of scope.** `trace` answers *which internal IP*;
+  resolving that to a user is a separate, confidential join against DHCP/RADIUS records.
 
 ---
 
