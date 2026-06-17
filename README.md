@@ -183,6 +183,8 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `ENRICH_WORKERS` | `runtime.NumCPU()` | Number of parallel enrichment workers |
 | `KAFKA_READERS` | `1` | Kafka reader goroutines in the consumer group; set ≥ partitions of `raw-flows` to parallelize ingest |
 | `METRICS_ADDR` | `:9090` | Address for Prometheus `/metrics` and pprof |
+| `LOG_FORMAT` | `text` | Structured log format: `text` (key=value, dev) or `json` (searchable, production) |
+| `LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn`, `error`. `debug` also prints per-flow records when ClickHouse is unavailable |
 
 ### Tenant config format (`tenants.yaml`)
 
@@ -388,7 +390,7 @@ Items that are fine for a PoC but need work before real traffic.
 ### Observability
 | Gap | Current state | Production fix |
 |---|---|---|
-| Unstructured logs | `log.Printf` plain text | Switch to `slog` with JSON output; add `flow_type`, `tenant_id` fields |
+| ~~Unstructured logs~~ (done) | `slog` with `LOG_FORMAT=text\|json` and `LOG_LEVEL`; structured key/value fields throughout. Per-flow stdout fallback retired — now a guarded `slog.Debug` that costs nothing at the default level | Ship JSON to a log aggregator; add request-scoped fields if tracing is added |
 | No alerting rules | Prometheus metrics exist but no alerts | Add Alertmanager rules: `enricher_flows_received_total` rate = 0, dedup rate > 50%, CH flush errors |
 | No dashboards | Raw `/metrics` only | Grafana dashboard — flows/s, dedup rate, threat hit rate, CH write latency |
 | No tracing | No spans | Add OpenTelemetry traces for the enrich → write path |

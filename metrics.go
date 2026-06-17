@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	pprofhttp "net/http/pprof"
 
@@ -82,14 +82,14 @@ func StartMetricsServer(ctx context.Context, addr string) {
 	go func() {
 		<-ctx.Done()
 		if err := srv.Shutdown(context.Background()); err != nil {
-			log.Printf("metrics server shutdown: %v", err)
+			slog.Error("metrics server shutdown", "err", err)
 		}
 	}()
 
 	go func() {
-		log.Printf("metrics server listening on %s", addr)
+		slog.Info("metrics server listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("metrics server: %v", err)
+			slog.Error("metrics server error", "err", err)
 		}
 	}()
 }

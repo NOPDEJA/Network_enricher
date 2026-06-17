@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -247,7 +247,7 @@ func applySchema(conn driver.Conn) error {
 			return err
 		}
 	}
-	log.Println("clickhouse schema ready")
+	slog.Info("clickhouse schema ready")
 	return nil
 }
 
@@ -276,7 +276,7 @@ func (w *BatchWriter) flush() {
 	w.mu.Unlock()
 
 	if err := w.send(rows); err != nil {
-		log.Printf("clickhouse flush failed, re-queueing %d rows: %v", len(rows), err)
+		slog.Error("clickhouse flush failed, re-queueing rows", "rows", len(rows), "err", err)
 		chWriteErrors.Inc()
 		w.mu.Lock()
 		// Put the failed rows back ahead of newer arrivals so they're retried, and
@@ -317,7 +317,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) error {
 			r.IsSampled, r.SamplingRate, r.ExpandedBytes, r.ExpandedPackets,
 			r.ExporterIP, r.FlowType,
 		); err != nil {
-			log.Printf("clickhouse append (dropping malformed row): %v", err)
+			slog.Warn("dropping malformed row", "err", err)
 			chRowsDropped.Inc()
 		}
 	}
