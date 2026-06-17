@@ -35,6 +35,18 @@ var (
 		Name: "enricher_clickhouse_rows_written_total",
 		Help: "Total rows written to ClickHouse across all flushes.",
 	})
+	chWriteErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_clickhouse_write_errors_total",
+		Help: "ClickHouse flush attempts that failed; their rows are re-queued, not dropped.",
+	})
+	chRowsDropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_clickhouse_rows_dropped_total",
+		Help: "Rows dropped because the write buffer hit its hard cap during a sustained ClickHouse outage.",
+	})
+	chBufferRows = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "enricher_clickhouse_buffer_rows",
+		Help: "Rows currently buffered awaiting a ClickHouse flush (rises during an outage).",
+	})
 	threatIPsLoaded = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "enricher_threat_ips_loaded",
 		Help: "Current number of IPs in the threat intel store.",
@@ -49,6 +61,9 @@ func registerMetrics() {
 		threatHits,
 		chFlushes,
 		chRowsWritten,
+		chWriteErrors,
+		chRowsDropped,
+		chBufferRows,
 		threatIPsLoaded,
 	)
 }

@@ -294,8 +294,14 @@ func main() {
 			// Without CommitInterval, ReadMessage commits the offset synchronously
 			// after every message — one broker round-trip per flow, which throttles
 			// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
-			// on an interval instead. On crash this can re-deliver the last <1s of
-			// offsets, but dedup absorbs that and flows are never lost.
+			// on an interval instead. Delivery is read-committed, not write-committed:
+			// offsets are committed ~1s after read, independent of the ClickHouse flush.
+			// A transient ClickHouse failure does NOT lose flows — flush() re-queues
+			// them into a bounded buffer (see batchwriter.go) — but a hard process
+			// crash can lose flows already committed yet still buffered (watch the
+			// enricher_clickhouse_buffer_rows gauge for that window). True
+			// write-committed delivery would commit offsets only after batch.Send
+			// succeeds; deferred as a documented limitation (see README Reliability).
 			CommitInterval: time.Second,
 			// Let the broker return a batch of records per fetch rather than dribbling
 			// them out, so the reader goroutine isn't round-trip bound.
