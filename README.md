@@ -379,7 +379,8 @@ Items that are fine for a PoC but need work before real traffic.
 ### Reliability
 | Gap | Current state | Production fix |
 |---|---|---|
-| Kafka offset auto-commit | `CommitInterval=1s` commits offsets ~1s after read, before the ClickHouse flush succeeds — a crash can re-deliver (dedup absorbs it) but the model is read-committed, not write-committed | Commit offsets only after `batch.Send()` returns nil for true at-least-once to ClickHouse |
+| Kafka offset auto-commit (read-committed) | `CommitInterval=1s` commits offsets independent of the ClickHouse flush. Transient CH write failures no longer lose flows (see next row), so the remaining exposure is a **hard process crash**, which can lose flows already committed but still buffered (`enricher_clickhouse_buffer_rows` shows that window). Accepted, documented limitation for the PoC | Commit offsets only after `batch.Send()` returns nil, tracking a per-partition watermark across the worker pool, for true write-committed at-least-once |
+| ClickHouse write failure (runtime) | `flush()` re-queues a failed batch ahead of new rows with a 1s back-off rather than dropping it; bounded at 500k buffered rows, past which the oldest are dropped and counted (`enricher_clickhouse_write_errors_total`, `enricher_clickhouse_rows_dropped_total`) | Persist the backlog to a durable spool or use `async_insert`; alert on `rows_dropped_total > 0` |
 | No dead-letter queue | Unmarshal failures are logged and dropped | Publish bad messages to a `raw-flows-dlq` topic for inspection |
 | Single instance | One enricher process — no HA | Run 2+ replicas; Kafka consumer group handles partition distribution automatically |
 | ClickHouse reconnect | `NewBatchWriter` fails fast on startup; no retry | Retry with backoff, or crash and let the container orchestrator restart |
