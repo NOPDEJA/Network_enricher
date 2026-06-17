@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -132,9 +132,9 @@ func (g *GeoStore) StartRefresh(ctx context.Context, cityPath, asnPath string) {
 				return
 			case <-ticker.C:
 				if err := g.Refresh(cityPath, asnPath); err != nil {
-					log.Printf("geoip refresh failed: %v", err)
+					slog.Error("geoip refresh failed", "err", err)
 				} else {
-					log.Println("geoip databases refreshed")
+					slog.Info("geoip databases refreshed")
 				}
 			}
 		}

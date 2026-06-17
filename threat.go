@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -60,7 +60,7 @@ func (s *ThreatStore) refresh(feedURL string) error {
 	s.ips = ips
 	s.mu.Unlock()
 	threatIPsLoaded.Set(float64(len(ips)))
-	log.Printf("threat feed loaded: %d IPs", len(ips))
+	slog.Info("threat feed loaded", "ips", len(ips))
 	return nil
 }
 
@@ -83,7 +83,7 @@ func (s *ThreatStore) StartRefresh(ctx context.Context, feedURL string) {
 				return
 			case <-ticker.C:
 				if err := s.refresh(feedURL); err != nil {
-					log.Printf("threat feed refresh failed: %v", err)
+					slog.Error("threat feed refresh failed", "err", err)
 				}
 			}
 		}
