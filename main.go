@@ -339,7 +339,12 @@ func main() {
 	close(rawChan)
 	wg.Wait()
 	if writer != nil {
-		writer.flush() // drain rows added by workers after the flush timer stopped
+		// Drain rows added by workers after the flush timer stopped. Force past the
+		// back-off and retry a few times so a failure in the last window doesn't
+		// strand buffered rows; whatever remains after that is unavoidably lost.
+		if lost := writer.FinalDrain(5); lost > 0 {
+			slog.Error("shutdown: clickhouse unreachable, rows lost", "rows", lost)
+		}
 	}
 	slog.Info("shutting down")
 }
