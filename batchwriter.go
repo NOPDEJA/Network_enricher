@@ -109,9 +109,11 @@ type BatchWriter struct {
 	maxAge     time.Duration
 	retryAfter time.Time // skip send attempts until this time after a failure (back-off)
 
-	// send performs the actual write. It's a field so tests can stub the
-	// ClickHouse round-trip; production wires it to sendToClickHouse.
-	send func(rows []FlowRow) error
+	// send performs the actual write. It returns the rows that should be
+	// re-queued on a retryable failure (malformed rows are dropped and excluded);
+	// on success it returns nil. It's a field so tests can stub the ClickHouse
+	// round-trip; production wires it to sendToClickHouse.
+	send func(rows []FlowRow) ([]FlowRow, error)
 }
 
 func NewBatchWriter(addr, database, username, password string) (*BatchWriter, error) {
@@ -262,12 +264,18 @@ func (w *BatchWriter) Add(row FlowRow) {
 }
 
 func (w *BatchWriter) flush() {
+	w.drain(false)
+}
+
+// drain sends buffered rows to ClickHouse in maxSize batches. When force is false
+// a recent failure's back-off window makes it a no-op, so a size-triggered flush
+// doesn't hammer a dead ClickHouse on every flow; the 1s timer retries once the
+// window passes. When force is true the back-off is ignored — the shutdown drain
+// uses this so a failure in the last back-off window can't strand buffered rows.
+func (w *BatchWriter) drain(force bool) {
 	w.mu.Lock()
 	chBufferRows.Set(float64(len(w.buffer)))
-	// Nothing to do, or still backing off from a recent failure: leave the rows
-	// buffered. The back-off keeps a size-triggered flush from hammering a dead
-	// ClickHouse on every flow; the 1s timer retries once the window passes.
-	if len(w.buffer) == 0 || time.Now().Before(w.retryAfter) {
+	if len(w.buffer) == 0 || (!force && time.Now().Before(w.retryAfter)) {
 		w.mu.Unlock()
 		return
 	}
@@ -275,37 +283,69 @@ func (w *BatchWriter) flush() {
 	w.buffer = make([]FlowRow, 0, w.maxSize)
 	w.mu.Unlock()
 
-	if err := w.send(rows); err != nil {
-		slog.Error("clickhouse flush failed, re-queueing rows", "rows", len(rows), "err", err)
-		chWriteErrors.Inc()
-		w.mu.Lock()
-		// Put the failed rows back ahead of newer arrivals so they're retried, and
-		// back off so the next size-triggered flush is a no-op until the timer fires.
-		w.buffer = append(rows, w.buffer...)
-		w.retryAfter = time.Now().Add(w.maxAge)
-		if over := len(w.buffer) - w.maxBuffer; over > 0 {
-			// Bounded buffer: a sustained outage must not OOM the process. Dropping
-			// the oldest rows is the last resort and the only intentional flow loss.
-			w.buffer = w.buffer[over:]
-			chRowsDropped.Add(float64(over))
+	// Send in maxSize chunks: after a sustained outage the buffer can hold up to
+	// maxBuffer rows, and shipping that as one giant insert risks a memory spike or
+	// a rejected batch right as ClickHouse recovers.
+	for i := 0; i < len(rows); i += w.maxSize {
+		end := min(i+w.maxSize, len(rows))
+		retryable, err := w.send(rows[i:end])
+		if err != nil {
+			// Re-queue what we couldn't write: the retryable rows of the failed chunk
+			// (malformed rows are already dropped and excluded) plus every later chunk
+			// we never attempted. They go ahead of newer arrivals; back off so the next
+			// size-triggered flush is a no-op until the timer fires.
+			unsent := append(retryable, rows[end:]...)
+			slog.Error("clickhouse flush failed, re-queueing rows", "rows", len(unsent), "err", err)
+			chWriteErrors.Inc()
+			w.mu.Lock()
+			w.buffer = append(unsent, w.buffer...)
+			w.retryAfter = time.Now().Add(w.maxAge)
+			if over := len(w.buffer) - w.maxBuffer; over > 0 {
+				// Bounded buffer: a sustained outage must not OOM the process. Dropping
+				// the oldest rows is the last resort and the only intentional flow loss.
+				w.buffer = w.buffer[over:]
+				chRowsDropped.Add(float64(over))
+			}
+			chBufferRows.Set(float64(len(w.buffer)))
+			w.mu.Unlock()
+			return
 		}
-		chBufferRows.Set(float64(len(w.buffer)))
-		w.mu.Unlock()
-		return
+		chFlushes.Inc()
+		chRowsWritten.Add(float64(end - i))
 	}
-	chFlushes.Inc()
-	chRowsWritten.Add(float64(len(rows)))
 }
 
-// sendToClickHouse writes one batch and returns an error only on a failure that
-// warrants a retry (prepare or send). A row that can't be appended is malformed —
-// re-queueing it would loop forever — so it's counted as dropped and skipped.
-func (w *BatchWriter) sendToClickHouse(rows []FlowRow) error {
+// FinalDrain flushes any buffered rows on shutdown, ignoring the back-off window
+// and retrying up to attempts times (waiting maxAge between tries) so a transient
+// failure in the last back-off window doesn't strand buffered rows. It returns the
+// number of rows still buffered — unavoidably lost — if every attempt fails.
+func (w *BatchWriter) FinalDrain(attempts int) int {
+	for i := 0; ; i++ {
+		w.drain(true)
+		w.mu.Lock()
+		remaining := len(w.buffer)
+		w.mu.Unlock()
+		if remaining == 0 || i >= attempts-1 {
+			return remaining
+		}
+		time.Sleep(w.maxAge)
+	}
+}
+
+// sendToClickHouse writes one batch. It returns an error only on a failure that
+// warrants a retry (prepare or send), along with the rows that should be
+// re-queued. A row that can't be appended is malformed — re-queueing it would
+// loop forever and re-count it as dropped on every retry — so it's counted as
+// dropped once and excluded from the returned set.
+func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	ctx := context.Background()
 	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO flows")
 	if err != nil {
-		return err
+		return rows, err
 	}
+	// Zero-cap view so the first append allocates a fresh backing array rather than
+	// clobbering the caller's rows slice (drain still references it for re-queueing).
+	appended := rows[:0:0]
 	for _, r := range rows {
 		if err := batch.Append(
 			r.Timestamp, r.TenantID, r.TenantName,
@@ -319,9 +359,14 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) error {
 		); err != nil {
 			slog.Warn("dropping malformed row", "err", err)
 			chRowsDropped.Inc()
+			continue
 		}
+		appended = append(appended, r)
 	}
-	return batch.Send()
+	if err := batch.Send(); err != nil {
+		return appended, err
+	}
+	return nil, nil
 }
 
 // StartFlushTimer flushes on a time trigger (whichever fires first: count or timer).
