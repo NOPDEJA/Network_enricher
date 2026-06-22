@@ -4,8 +4,7 @@
 geoip/
 .env
 
-# Local-only: internal docs and the personal run script (contains infra IP + password)
-HOW_IT_WORKS.md
+# Local-only: personal run script (contains infra IP + password).
+# Internal docs (HOW_IT_WORKS, LEARNING_PATH, scaling-plan, code-report) relocated
+# out of the repo to ../Network_Enricher_internal_docs.
 run.ps1
-docs/scaling-plan.md
-docs/code-report.md
