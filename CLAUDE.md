@@ -119,4 +119,15 @@ For multi-step tasks, state a brief plan first:
 
 ---
 
+## 8. Session & Token Hygiene
+
+**Cost comes from context size per turn, not from idle time.** Leaving a session open costs nothing; every message re-sends the whole conversation, so long sessions get expensive per turn.
+
+- **Keep sessions task-scoped.** Finished a task or switching to something unrelated → `/clear` and start fresh. This project has a populated auto-memory (`MEMORY.md` + memory files), so a fresh session rehydrates the important state automatically.
+- **Use `/compact` only to continue the *same* long task** with less overhead. Don't `/compact` *and* start a new session — the new session discards the compacted history anyway.
+- **Don't act on idle.** There's no idle-timer trigger; auto-compact only fires when the context window fills. Stepping away ~5 min just expires the prompt cache (one uncached re-read on return), which is unavoidable.
+- **Lean on memory, not long chats.** Persist durable project state to the memory files so `/clear` is cheap and safe.
+
+---
+
 **These guidelines are working if:** diffs are tight and traceable, enrichers are testable in isolation, and the pipeline never silently drops flows.

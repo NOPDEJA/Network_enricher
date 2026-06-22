@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -56,7 +56,7 @@ func (s *TenantStore) load(path string) error {
 		for _, subnet := range t.Subnets {
 			_, network, err := net.ParseCIDR(subnet)
 			if err != nil {
-				log.Printf("tenant %d: skipping bad subnet %q: %v", t.ID, subnet, err)
+				slog.Warn("skipping bad tenant subnet", "tenant_id", t.ID, "subnet", subnet, "err", err)
 				continue
 			}
 			r.Insert(&tenantEntry{network: *network, id: t.ID, name: t.Name})
@@ -107,9 +107,9 @@ func (s *TenantStore) StartRefresh(ctx context.Context, path string) {
 				return
 			case <-ticker.C:
 				if err := s.load(path); err != nil {
-					log.Printf("tenant config reload failed: %v", err)
+					slog.Error("tenant config reload failed", "err", err)
 				} else {
-					log.Println("tenant config reloaded")
+					slog.Info("tenant config reloaded")
 				}
 			}
 		}

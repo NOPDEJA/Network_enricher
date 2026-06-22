@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -144,6 +143,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	setupLogger()
+
 	// GeoIP is optional: set GEOIP_CITY_PATH and GEOIP_ASN_PATH to enable.
 	var geo *GeoStore
 	cityPath := os.Getenv("GEOIP_CITY_PATH")
@@ -152,13 +153,13 @@ func main() {
 		var err error
 		geo, err = NewGeoStore(cityPath, asnPath)
 		if err != nil {
-			log.Printf("geoip init failed, continuing without geo enrichment: %v", err)
+			slog.Error("geoip init failed, continuing without geo enrichment", "err", err)
 		} else {
-			log.Println("geoip loaded")
+			slog.Info("geoip loaded")
 			geo.StartRefresh(ctx, cityPath, asnPath)
 		}
 	} else {
-		log.Println("GEOIP_CITY_PATH / GEOIP_ASN_PATH not set — skipping geo enrichment")
+		slog.Info("geo enrichment disabled", "reason", "GEOIP_CITY_PATH / GEOIP_ASN_PATH not set")
 	}
 
 	// Tenant mapping — optional, set TENANT_CONFIG_PATH to enable.
@@ -167,13 +168,13 @@ func main() {
 		var err error
 		tenant, err = NewTenantStore(tenantPath)
 		if err != nil {
-			log.Printf("tenant store init failed, continuing without tenant mapping: %v", err)
+			slog.Error("tenant store init failed, continuing without tenant mapping", "err", err)
 		} else {
-			log.Println("tenant config loaded")
+			slog.Info("tenant config loaded")
 			tenant.StartRefresh(ctx, tenantPath)
 		}
 	} else {
-		log.Println("TENANT_CONFIG_PATH not set — skipping tenant mapping")
+		slog.Info("tenant mapping disabled", "reason", "TENANT_CONFIG_PATH not set")
 	}
 
 	// Threat intelligence — optional, set THREAT_FEED_URL to override default.
@@ -185,7 +186,7 @@ func main() {
 	var err error
 	threat, err = NewThreatStore(feedURL)
 	if err != nil {
-		log.Printf("threat store init failed, continuing without threat intel: %v", err)
+		slog.Error("threat store init failed, continuing without threat intel", "err", err)
 	} else {
 		threat.StartRefresh(ctx, feedURL)
 	}
@@ -203,7 +204,7 @@ func main() {
 		os.Getenv("CLICKHOUSE_PASSWORD"),
 	)
 	if err != nil {
-		log.Printf("clickhouse init failed, continuing without ClickHouse: %v", err)
+		slog.Error("clickhouse init failed, continuing without ClickHouse", "err", err)
 		writer = nil
 	} else {
 		writer.StartFlushTimer(ctx)
@@ -218,11 +219,19 @@ func main() {
 	// would otherwise dedup ~90% of flows. Not for production.
 	dedupEnabled := !boolEnv("DEDUP_DISABLE", false)
 	if !dedupEnabled {
-		log.Println("DEDUP_DISABLE set — dedup bypassed (load-test mode)")
+		slog.Warn("dedup bypassed (load-test mode)", "reason", "DEDUP_DISABLE set")
 	}
 
 	registerMetrics()
 	StartMetricsServer(ctx, getenv("METRICS_ADDR", ":9090"))
+
+	// Without ClickHouse there is nowhere to store enriched flows; emit them at
+	// debug level only, so the no-CH dev fallback can't cost a write syscall per
+	// flow at the default level. The level is fixed for the run, so gate once.
+	logFlows := writer == nil && slog.Default().Enabled(ctx, slog.LevelDebug)
+	if writer == nil && !logFlows {
+		slog.Info("ClickHouse unavailable; per-flow records suppressed (set LOG_LEVEL=debug to print them)")
+	}
 
 	workerCount := intEnv("ENRICH_WORKERS", runtime.NumCPU())
 	// The channel carries raw Kafka payloads, not parsed flows: JSON decode and
@@ -236,7 +245,7 @@ func main() {
 			for raw := range rawChan {
 				var flow FlowMessage
 				if err := json.Unmarshal(raw, &flow); err != nil {
-					log.Printf("unmarshal error: %v", err)
+					slog.Error("unmarshal error", "err", err)
 					continue
 				}
 
@@ -261,17 +270,15 @@ func main() {
 				}
 				if writer != nil {
 					writer.Add(toFlowRow(e))
-				} else {
-					threatFlag := ""
-					if e.IsThreatSrc || e.IsThreatDst {
-						threatFlag = fmt.Sprintf("  THREAT=%s", e.ThreatLabel)
-					}
-					fmt.Printf("%s:%d → %s:%d  proto=%s  bytes=%d  src=%s/%d  dst=%s/%d  tenant=%d%s\n",
-						e.SrcAddr, e.SrcPort, e.DstAddr, e.DstPort,
-						e.Proto, e.Bytes,
-						e.SrcGeo.CountryCode, e.SrcGeo.ASN,
-						e.DstGeo.CountryCode, e.DstGeo.ASN,
-						e.TenantID, threatFlag)
+				} else if logFlows {
+					slog.Debug("flow",
+						"src", e.SrcAddr, "src_port", e.SrcPort,
+						"dst", e.DstAddr, "dst_port", e.DstPort,
+						"proto", e.Proto, "bytes", e.Bytes,
+						"src_cc", e.SrcGeo.CountryCode, "src_asn", e.SrcGeo.ASN,
+						"dst_cc", e.DstGeo.CountryCode, "dst_asn", e.DstGeo.ASN,
+						"tenant_id", e.TenantID,
+						"threat", e.IsThreatSrc || e.IsThreatDst, "threat_label", e.ThreatLabel)
 				}
 				flowsWritten.Inc()
 			}
@@ -294,8 +301,14 @@ func main() {
 			// Without CommitInterval, ReadMessage commits the offset synchronously
 			// after every message — one broker round-trip per flow, which throttles
 			// consumption to ~1/latency (~58 flows/s on a LAN). Commit asynchronously
-			// on an interval instead. On crash this can re-deliver the last <1s of
-			// offsets, but dedup absorbs that and flows are never lost.
+			// on an interval instead. Delivery is read-committed, not write-committed:
+			// offsets are committed ~1s after read, independent of the ClickHouse flush.
+			// A transient ClickHouse failure does NOT lose flows — flush() re-queues
+			// them into a bounded buffer (see batchwriter.go) — but a hard process
+			// crash can lose flows already committed yet still buffered (watch the
+			// enricher_clickhouse_buffer_rows gauge for that window). True
+			// write-committed delivery would commit offsets only after batch.Send
+			// succeeds; deferred as a documented limitation (see README Reliability).
 			CommitInterval: time.Second,
 			// Let the broker return a batch of records per fetch rather than dribbling
 			// them out, so the reader goroutine isn't round-trip bound.
@@ -310,7 +323,7 @@ func main() {
 					if ctx.Err() != nil {
 						return
 					}
-					log.Printf("read error: %v", err)
+					slog.Error("kafka read error", "err", err)
 					continue
 				}
 				// kafka-go allocates a fresh Value per message, so it is safe to
@@ -320,13 +333,18 @@ func main() {
 		})
 	}
 
-	log.Printf("connected to Redpanda, reading from raw-flows (readers=%d, workers=%d)...", readerCount, workerCount)
+	slog.Info("connected to Redpanda, reading from raw-flows", "readers", readerCount, "workers", workerCount)
 
 	readerWg.Wait()
 	close(rawChan)
 	wg.Wait()
 	if writer != nil {
-		writer.flush() // drain rows added by workers after the flush timer stopped
+		// Drain rows added by workers after the flush timer stopped. Force past the
+		// back-off and retry a few times so a failure in the last window doesn't
+		// strand buffered rows; whatever remains after that is unavoidably lost.
+		if lost := writer.FinalDrain(5); lost > 0 {
+			slog.Error("shutdown: clickhouse unreachable, rows lost", "rows", lost)
+		}
 	}
-	log.Println("shutting down")
+	slog.Info("shutting down")
 }
