@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,5 +167,84 @@ func TestDrainReQueuesOnlyRetryableRows(t *testing.T) {
 
 	if len(w.buffer) != 2 {
 		t.Fatalf("buffer = %d, want 2 (malformed row excluded from re-queue)", len(w.buffer))
+	}
+}
+
+// Add must trigger a flush exactly when the buffer reaches maxSize — not before,
+// so we don't flush on every flow, and not never, so the count-trigger works.
+func TestAddFlushesAtMaxSize(t *testing.T) {
+	calls := 0
+	w := &BatchWriter{maxSize: 3, maxBuffer: 100, maxAge: time.Second,
+		send: func([]FlowRow) ([]FlowRow, error) { calls++; return nil, nil }}
+
+	w.Add(FlowRow{})
+	w.Add(FlowRow{})
+	if calls != 0 {
+		t.Fatalf("flushed before reaching maxSize: calls = %d, want 0", calls)
+	}
+
+	w.Add(FlowRow{}) // third row hits maxSize → flush
+	if calls != 1 {
+		t.Fatalf("size-trigger did not flush: calls = %d, want 1", calls)
+	}
+	if len(w.buffer) != 0 {
+		t.Fatalf("buffer not drained after size-trigger: %d rows left", len(w.buffer))
+	}
+}
+
+// When ClickHouse never recovers, FinalDrain must exhaust its attempts and report
+// the rows it couldn't write rather than blocking shutdown forever.
+func TestFinalDrainReturnsRemainingWhenAllAttemptsFail(t *testing.T) {
+	calls := 0
+	w := &BatchWriter{maxSize: 4, maxBuffer: 100, maxAge: time.Millisecond,
+		send: func(rows []FlowRow) ([]FlowRow, error) { calls++; return rows, errors.New("ch down") }}
+	w.buffer = makeRows(3)
+
+	if lost := w.FinalDrain(3); lost != 3 {
+		t.Fatalf("FinalDrain = %d, want 3 (all attempts failed)", lost)
+	}
+	if calls != 3 {
+		t.Fatalf("send attempts = %d, want 3", calls)
+	}
+	if len(w.buffer) != 3 {
+		t.Fatalf("rows lost: buffer = %d, want 3 preserved for the operator", len(w.buffer))
+	}
+}
+
+// Many workers calling Add concurrently must not race the size-triggered flush or
+// the shutdown drain, and every row must end up sent (run with -race). Guards the
+// mutex discipline in Add/drain/FinalDrain.
+func TestConcurrentAddNoRace(t *testing.T) {
+	var mu sync.Mutex
+	sent := 0
+	w := &BatchWriter{maxSize: 8, maxBuffer: 1_000_000, maxAge: time.Millisecond,
+		send: func(rows []FlowRow) ([]FlowRow, error) {
+			mu.Lock()
+			sent += len(rows)
+			mu.Unlock()
+			return nil, nil
+		}}
+
+	const workers, perWorker = 8, 2000
+	var wg sync.WaitGroup
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				w.Add(FlowRow{SrcIP: "10.0.0.1"})
+			}
+		}()
+	}
+	wg.Wait()
+
+	if lost := w.FinalDrain(3); lost != 0 {
+		t.Fatalf("FinalDrain left %d rows", lost)
+	}
+	mu.Lock()
+	total := sent
+	mu.Unlock()
+	if total != workers*perWorker {
+		t.Fatalf("rows sent = %d, want %d (rows lost under concurrency)", total, workers*perWorker)
 	}
 }
