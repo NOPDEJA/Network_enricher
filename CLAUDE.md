@@ -112,6 +112,7 @@ For multi-step tasks, state a brief plan first:
 
 ## 7. Testing Conventions
 
+- **Reproduce before you fix.** For a reported bug, first reproduce it end-to-end against the real pipeline (run the enricher, feed it a real/synthetic flow via `cmd/loadgen` or a raw NetFlow packet, observe the actual output) before writing a regression test. A unit test that passes on a mocked path can miss the real failure mode (see the Wi-Fi-vs-broker throughput trap in the README) — reproduce first, then let the test lock in the fix.
 - Unit tests live in `_test.go` files alongside the package.
 - Use table-driven tests for enrichers (multiple IP/flow inputs → expected output).
 - Integration tests that require external services (Kafka, ES) go in `integration/` and are gated by a build tag: `//go:build integration`.
