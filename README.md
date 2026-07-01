@@ -125,6 +125,12 @@ clickhouse schema ready
 - Prometheus metrics: `http://localhost:9090/metrics`
 - pprof: `http://localhost:9090/debug/pprof/`
 - CPU profile: `go tool pprof http://localhost:9090/debug/pprof/profile?seconds=30`
+- **Grafana dashboard: `http://localhost:3000`** — flows/sec, bytes/sec, protocol mix,
+  top destination countries, top talkers, and top destination orgs (ASN), straight
+  off the ClickHouse `flows` / `flows_1m` tables. The stack auto-provisions the
+  ClickHouse datasource and the "Network Enricher — Flows" dashboard on first start
+  (anonymous admin, no login). Default time range is the last 30 days; if panels are
+  still empty, widen it further — they only show data the enricher has already written.
 
 **4. Tear down**
 
@@ -392,7 +398,7 @@ Items that are fine for a PoC but need work before real traffic.
 |---|---|---|
 | ~~Unstructured logs~~ (done) | `slog` with `LOG_FORMAT=text\|json` and `LOG_LEVEL`; structured key/value fields throughout. Per-flow stdout fallback retired — now a guarded `slog.Debug` that costs nothing at the default level | Ship JSON to a log aggregator; add request-scoped fields if tracing is added |
 | No alerting rules | Prometheus metrics exist but no alerts | Add Alertmanager rules: `enricher_flows_received_total` rate = 0, dedup rate > 50%, CH flush errors |
-| No dashboards | Raw `/metrics` only | Grafana dashboard — flows/s, dedup rate, threat hit rate, CH write latency |
+| ~~No dashboards~~ (done) | Grafana auto-provisioned on `http://localhost:3000` — flows/sec, bytes/sec, protocol mix, top countries/talkers/orgs off ClickHouse | Add Prometheus-sourced panels too (dedup rate, threat hit rate, CH flush latency) and lock down anonymous admin |
 | No tracing | No spans | Add OpenTelemetry traces for the enrich → write path |
 
 ### Operations

@@ -1,0 +1,21 @@
+# Auto-provisions the ClickHouse datasource so Grafana connects on first start.
+# The grafana-clickhouse-datasource plugin is installed via GF_INSTALL_PLUGINS
+# in docker_compose.yml. Password is read from the CLICKHOUSE_PASSWORD env var
+# passed into the Grafana container (same default as the enricher: enricher_dev).
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    uid: clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    editable: true
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: default
+      defaultDatabase: default
+    secureJsonData:
+      password: ${CLICKHOUSE_PASSWORD}

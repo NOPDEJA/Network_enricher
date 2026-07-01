@@ -54,5 +54,27 @@ services:
       - goflow2
     restart: on-failure
 
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      # Plugin that talks to ClickHouse over the native protocol (port 9000).
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
+      # Anonymous admin: zero-login demo access on http://localhost:3000.
+      # Fine for a local/lab rig; lock this down before any real deployment.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      # Same password the datasource provisioning reads (matches ClickHouse).
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-enricher_dev}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - clickhouse
+
 volumes:
   clickhouse-data:
+  grafana-data:

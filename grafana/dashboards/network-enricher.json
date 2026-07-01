@@ -1,0 +1,195 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["network-enricher"],
+  "time": { "from": "now-30d", "to": "now" },
+  "timezone": "utc",
+  "title": "Network Enricher — Flows",
+  "uid": "network-enricher",
+  "templating": { "list": [] },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Flows (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT count() AS flows FROM flows WHERE $__timeFilter(timestamp)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Bytes (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "bytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(bytes) AS bytes FROM flows WHERE $__timeFilter(timestamp)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Packets (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(packets) AS packets FROM flows WHERE $__timeFilter(timestamp)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Threat flows (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT countIf(is_threat_src = 1 OR is_threat_dst = 1) AS threats FROM flows WHERE $__timeFilter(timestamp)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Flows / sec",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1 }, "unit": "flps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "rawSql": "SELECT timestamp AS time, sum(flow_count) / 60 AS \"flows/sec\" FROM flows_1m WHERE $__timeFilter(timestamp) GROUP BY time ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Bytes / sec",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1 }, "unit": "Bps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "rawSql": "SELECT timestamp AS time, sum(bytes) / 60 AS \"bytes/sec\" FROM flows_1m WHERE $__timeFilter(timestamp) GROUP BY time ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Protocol mix",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "pieType": "donut", "legend": { "displayMode": "list", "placement": "right", "values": ["percent"] } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT protocol, sum(flow_count) AS flows FROM flows_1m WHERE $__timeFilter(timestamp) AND protocol != '' GROUP BY protocol ORDER BY flows DESC"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "barchart",
+      "title": "Top destination countries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "orientation": "horizontal", "xField": "dst_country", "legend": { "showLegend": false } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT dst_country, sum(flow_count) AS flows FROM flows_1m WHERE $__timeFilter(timestamp) AND dst_country != '' GROUP BY dst_country ORDER BY flows DESC LIMIT 10"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Top talkers (src_ip)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "bytes" }, "properties": [ { "id": "unit", "value": "bytes" } ] } ] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT src_ip, count() AS flows, sum(bytes) AS bytes FROM flows WHERE $__timeFilter(timestamp) GROUP BY src_ip ORDER BY bytes DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Top destination orgs (ASN)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "bytes" }, "properties": [ { "id": "unit", "value": "bytes" } ] } ] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT dst_asn, any(dst_org) AS org, count() AS flows, sum(bytes) AS bytes FROM flows WHERE $__timeFilter(timestamp) AND dst_asn != 0 GROUP BY dst_asn ORDER BY bytes DESC LIMIT 20"
+        }
+      ]
+    }
+  ]
+}
