@@ -190,6 +190,25 @@
           "rawSql": "SELECT dst_asn, any(dst_org) AS org, count() AS flows, sum(bytes) AS bytes FROM flows WHERE $__timeFilter(timestamp) AND dst_asn != 0 GROUP BY dst_asn ORDER BY bytes DESC LIMIT 20"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Tenant traffic (outbound / inbound)",
+      "description": "Outbound = tenant owns src_ip; inbound = tenant owns dst_ip (dst_tenant_* columns). A flow between two tenants counts once for each.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "outbound_bytes" }, "properties": [ { "id": "unit", "value": "bytes" } ] }, { "matcher": { "id": "byName", "options": "inbound_bytes" }, "properties": [ { "id": "unit", "value": "bytes" } ] } ] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT tenant, sumIf(f, dir = 'out') AS outbound_flows, sumIf(b, dir = 'out') AS outbound_bytes, sumIf(f, dir = 'in') AS inbound_flows, sumIf(b, dir = 'in') AS inbound_bytes FROM (SELECT tenant_name AS tenant, 'out' AS dir, count() AS f, sum(bytes) AS b FROM flows WHERE $__timeFilter(timestamp) AND tenant_name != '' GROUP BY tenant UNION ALL SELECT dst_tenant_name AS tenant, 'in' AS dir, count() AS f, sum(bytes) AS b FROM flows WHERE $__timeFilter(timestamp) AND dst_tenant_name != '' GROUP BY tenant) GROUP BY tenant ORDER BY outbound_bytes + inbound_bytes DESC LIMIT 20"
+        }
+      ]
     }
   ]
 }
