@@ -335,6 +335,93 @@ go run ./cmd/loadgen -addr <ip>:9092 -count 5000000
 
 ---
 
+## Testing with real traffic (softflowd)
+
+`cmd/loadgen` proves *throughput* with synthetic flows; it deliberately emits
+100% unique 7-tuples with uniform timing, which is nothing like real traffic.
+To test *realism* — real IPs through GeoIP, real duplicate patterns through
+dedup, live timestamps in Grafana — run [softflowd](https://github.com/irino/softflowd)
+on the infra machine. It captures packets on a real interface and exports
+NetFlow v9 into the same goflow2 listener the compose stack already publishes
+on UDP 2055, so the entire real path is exercised:
+
+```
+real packets → softflowd (NetFlow v9) → goflow2 → Kafka → enricher → ClickHouse → Grafana
+```
+
+### Setup (on the infra machine)
+
+```bash
+# 1. Stop the synthetic generator so it doesn't mix fake flows in.
+docker compose stop nflow-generator
+
+# 2. Install softflowd.
+sudo apt install softflowd
+
+# 3. Find the active interface (the one with the default route).
+ip route | grep default
+
+# 4. Export the interface's traffic as NetFlow v9 to goflow2.
+#    -d           stay in the foreground (softflowd daemonizes by default)
+#    -v 9         NetFlow v9 (matches the goflow2 listener on 2055)
+#    -t maxlife=60  export every flow within 60 s so data appears quickly
+sudo softflowd -d -i <iface> -n 127.0.0.1:2055 -v 9 -t maxlife=60
+```
+
+Then start the enricher as usual and generate some traffic on the machine
+(`curl`, `apt update`, an SSH session — anything). Verify flows are moving:
+
+```bash
+docker compose logs -f goflow2          # goflow2 receiving exports
+curl -s localhost:9090/metrics | grep enricher_flows_received_total
+```
+
+Expect **tens of flows/s**, not thousands — a single host's connection rate.
+That's correct: this test is about flow *shape*, not volume (see the
+throughput section above for volume).
+
+### What real flows look like in the data
+
+- **Source geo will be `private`** — the machine's own address is RFC1918, so
+  `src_country` is `private` by design; destinations resolve to real
+  countries/ASNs.
+- **Tenant mapping works for real** — add the machine's subnet to
+  `tenants.yaml` and its flows attribute to that tenant.
+- **Dedup finally has real work** — long-lived connections re-export on the
+  active timeout, so `enricher_flows_deduplicated_total` moves for the first
+  time with honest duplicates.
+
+### Variant: replay a research PCAP
+
+softflowd can also read a capture file instead of a live interface:
+
+```bash
+softflowd -d -r capture.pcap -n 127.0.0.1:2055 -v 9
+```
+
+Public datasets (MAWI backbone traces, CICIDS2017 — labeled attack traffic
+that exercises the threat enricher) give campus-scale traffic shape with no
+privacy concerns. **Gotcha:** replayed flows carry the capture's *original*
+timestamps, so rows land in old ClickHouse partitions and a "last 6 hours"
+Grafana range shows nothing — set the dashboard time range to the capture's
+date.
+
+### Scaling up to genuinely multi-user traffic
+
+Two options, in order of effort:
+
+1. **Route your own devices through the infra machine** (hotspot/gateway) —
+   softflowd then sees real multi-device traffic; still entirely your own,
+   so no authorization needed.
+2. **Ask the network team for flow export or a SPAN port** from real
+   infrastructure. Requires explicit authorization (it's other people's
+   traffic) and a **static IP** on the collector — a DHCP address that drifts
+   breaks the export destination. Passive Wi-Fi sniffing is *not* an option:
+   WPA2/3 encrypts per-client, so a mirror on the wired side is the correct
+   tap point.
+
+---
+
 ## Prometheus metrics
 
 | Metric | Type | Description |
