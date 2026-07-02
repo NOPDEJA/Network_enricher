@@ -60,6 +60,36 @@ func TestTenantStoreLookup(t *testing.T) {
 	}
 }
 
+// Both directions of a conversation must attribute: src match for outbound,
+// dst match for the inbound/return half (which previously got tenant 0).
+func TestEnrich_TenantBothDirections(t *testing.T) {
+	s := newTenantStoreFromYAML(t, sampleTenantYAML)
+
+	tests := []struct {
+		name             string
+		src, dst         string
+		srcID, dstID     uint32
+		srcName, dstName string
+	}{
+		{"outbound: tenant src, external dst", "10.0.1.5", "8.8.8.8", 1001, 0, "Acme Corp", ""},
+		{"inbound: external src, tenant dst", "8.8.8.8", "10.0.1.5", 0, 1001, "", "Acme Corp"},
+		{"tenant to tenant", "10.0.1.5", "10.0.3.1", 1001, 1002, "Acme Corp", "Beta LLC"},
+		{"no tenant either side", "8.8.8.8", "1.1.1.1", 0, 0, "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := enrich(FlowMessage{SrcAddr: tc.src, DstAddr: tc.dst}, nil, s, nil)
+			if e.TenantID != tc.srcID || e.TenantName != tc.srcName {
+				t.Errorf("src tenant = (%d, %q), want (%d, %q)", e.TenantID, e.TenantName, tc.srcID, tc.srcName)
+			}
+			if e.DstTenantID != tc.dstID || e.DstTenantName != tc.dstName {
+				t.Errorf("dst tenant = (%d, %q), want (%d, %q)", e.DstTenantID, e.DstTenantName, tc.dstID, tc.dstName)
+			}
+		})
+	}
+}
+
 func TestTenantStoreLookupNil(t *testing.T) {
 	s := newTenantStoreFromYAML(t, sampleTenantYAML)
 	id, name := s.Lookup(nil)

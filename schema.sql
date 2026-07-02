@@ -13,8 +13,12 @@
 -- TTL: drop rows older than 90 days to keep storage bounded.
 CREATE TABLE IF NOT EXISTS flows (
     timestamp        DateTime,
+    -- tenant_id/tenant_name attribute the SOURCE address (outbound traffic);
+    -- dst_tenant_* attribute the DESTINATION (the inbound/return half).
     tenant_id        UInt32,
     tenant_name      LowCardinality(String),
+    dst_tenant_id    UInt32,
+    dst_tenant_name  LowCardinality(String),
     src_ip           String,
     dst_ip           String,
     src_port         UInt32,
@@ -57,6 +61,11 @@ ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (tenant_id, timestamp, src_ip, dst_ip)
 TTL timestamp + INTERVAL 90 DAY DELETE;
+
+-- Migration for tables created before dst-side tenant attribution.
+ALTER TABLE flows
+    ADD COLUMN IF NOT EXISTS dst_tenant_id UInt32 AFTER tenant_name,
+    ADD COLUMN IF NOT EXISTS dst_tenant_name LowCardinality(String) AFTER dst_tenant_id;
 
 
 -- ============================================================

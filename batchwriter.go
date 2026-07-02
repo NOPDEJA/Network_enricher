@@ -17,6 +17,8 @@ type FlowRow struct {
 	Timestamp       time.Time
 	TenantID        uint32
 	TenantName      string
+	DstTenantID     uint32
+	DstTenantName   string
 	SrcIP           string
 	DstIP           string
 	SrcPort         uint32
@@ -69,6 +71,8 @@ func toFlowRow(e EnrichedFlow) FlowRow {
 		Timestamp:       ts,
 		TenantID:        e.TenantID,
 		TenantName:      e.TenantName,
+		DstTenantID:     e.DstTenantID,
+		DstTenantName:   e.DstTenantName,
 		SrcIP:           e.SrcAddr,
 		DstIP:           e.DstAddr,
 		SrcPort:         e.SrcPort,
@@ -157,6 +161,8 @@ func applySchema(conn driver.Conn) error {
 			timestamp        DateTime,
 			tenant_id        UInt32,
 			tenant_name      LowCardinality(String),
+			dst_tenant_id    UInt32,
+			dst_tenant_name  LowCardinality(String),
 			src_ip           String,
 			dst_ip           String,
 			src_port         UInt32,
@@ -189,6 +195,12 @@ func applySchema(conn driver.Conn) error {
 		PARTITION BY toYYYYMMDD(timestamp)
 		ORDER BY (tenant_id, timestamp, src_ip, dst_ip)
 		TTL timestamp + INTERVAL 90 DAY DELETE`,
+
+		// Migration for tables created before dst-side tenant attribution:
+		// CREATE IF NOT EXISTS above is a no-op on them, so add the columns here.
+		`ALTER TABLE flows
+			ADD COLUMN IF NOT EXISTS dst_tenant_id UInt32 AFTER tenant_name,
+			ADD COLUMN IF NOT EXISTS dst_tenant_name LowCardinality(String) AFTER dst_tenant_id`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (
 			timestamp    DateTime,
@@ -339,7 +351,16 @@ func (w *BatchWriter) FinalDrain(attempts int) int {
 // dropped once and excluded from the returned set.
 func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	ctx := context.Background()
-	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO flows")
+	// Explicit column list: positional Append stays correct regardless of the
+	// physical column order in a table that was migrated with ALTER ADD COLUMN.
+	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO flows (
+		timestamp, tenant_id, tenant_name, dst_tenant_id, dst_tenant_name,
+		src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets,
+		src_country, src_city, src_lat, src_lon, src_asn, src_org,
+		dst_country, dst_city, dst_lat, dst_lon, dst_asn, dst_org,
+		is_threat_src, is_threat_dst, threat_label,
+		is_sampled, sampling_rate, expanded_bytes, expanded_packets,
+		exporter_ip, flow_type)`)
 	if err != nil {
 		return rows, err
 	}
@@ -348,7 +369,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	appended := rows[:0:0]
 	for _, r := range rows {
 		if err := batch.Append(
-			r.Timestamp, r.TenantID, r.TenantName,
+			r.Timestamp, r.TenantID, r.TenantName, r.DstTenantID, r.DstTenantName,
 			r.SrcIP, r.DstIP, r.SrcPort, r.DstPort, r.Protocol,
 			r.Bytes, r.Packets,
 			r.SrcCountry, r.SrcCity, r.SrcLat, r.SrcLon, r.SrcASN, r.SrcOrg,

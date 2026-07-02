@@ -59,8 +59,10 @@ type EnrichedFlow struct {
 	FlowMessage
 	SrcGeo          GeoData
 	DstGeo          GeoData
-	TenantID        uint32
+	TenantID        uint32 // tenant owning SrcAddr (outbound attribution)
 	TenantName      string
+	DstTenantID     uint32 // tenant owning DstAddr (inbound attribution)
+	DstTenantName   string
 	IsThreatSrc     bool
 	IsThreatDst     bool
 	ThreatLabel     string
@@ -76,14 +78,18 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 	// entirely when no enricher needs it.
 	if geo != nil || tenant != nil {
 		srcIP := net.ParseIP(flow.SrcAddr)
+		dstIP := net.ParseIP(flow.DstAddr)
 
 		if geo != nil {
 			e.SrcGeo = geo.Lookup(srcIP)
-			e.DstGeo = geo.Lookup(net.ParseIP(flow.DstAddr))
+			e.DstGeo = geo.Lookup(dstIP)
 		}
 
 		if tenant != nil {
+			// Attribute both directions: src match covers outbound traffic,
+			// dst match covers the return/inbound half of the conversation.
 			e.TenantID, e.TenantName = tenant.Lookup(srcIP)
+			e.DstTenantID, e.DstTenantName = tenant.Lookup(dstIP)
 		}
 	}
 
