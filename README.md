@@ -236,7 +236,10 @@ reads to stamp four token columns (`src_mac_token`, `src_user_token`,
 `dst_mac_token`, `dst_user_token`); both directions are resolved because the
 client is the source outbound and the destination on the return half. The raw
 events are also appended to `identity_dhcp_events` / `identity_radius_events` in
-ClickHouse as the forensic source of truth.
+ClickHouse as the forensic source of truth. Read offsets live in memory only, so
+a restart re-reads the logs from the start and re-inserts events; both tables are
+`ReplacingMergeTree`, so duplicates collapse on merge — but dedup is **eventual**,
+so exact forensic queries should use `FINAL` or `GROUP BY`.
 
 **Privacy — pseudonymous only ("instant noodle").** Usernames, MACs, and
 hostnames are **never** stored in the clear. Each is replaced at parse time by
@@ -490,6 +493,7 @@ Two options, in order of effort:
 | `enricher_identity_tag_hits_total` | Counter | Flows where identity resolved ≥1 token |
 | `enricher_identity_tag_misses_total` | Counter | Flows where identity resolved no token |
 | `enricher_identity_event_write_errors_total` | Counter | ClickHouse identity-event writes that failed (retried next scan) |
+| `enricher_identity_scan_panics_total` | Counter | Identity poller scans that panicked and were recovered |
 
 ---
 

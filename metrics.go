@@ -71,6 +71,10 @@ var (
 		Name: "enricher_identity_event_write_errors_total",
 		Help: "ClickHouse write attempts for identity events that failed; the batch is retried next scan.",
 	})
+	identityScanPanics = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_identity_scan_panics_total",
+		Help: "Identity poller scans that panicked and were recovered.",
+	})
 )
 
 func registerMetrics() {
@@ -90,6 +94,7 @@ func registerMetrics() {
 		identityTagHits,
 		identityTagMisses,
 		identityEventWriteErrors,
+		identityScanPanics,
 	)
 }
 

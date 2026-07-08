@@ -55,13 +55,15 @@ type IdentityStore struct {
 }
 
 type ipBinding struct {
-	macToken string
-	deadline time.Time // lease is trusted until this instant
+	macToken  string
+	eventTime time.Time // time of the event that set this binding (newest-wins guard)
+	deadline  time.Time // lease is trusted until this instant
 }
 
 type macBinding struct {
 	userToken string
 	sessionID string
+	eventTime time.Time // time of the event that set this binding (newest-wins guard)
 	deadline  time.Time // session is trusted until this instant
 }
 
@@ -81,7 +83,10 @@ func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, maxLease, maxSessi
 		now:        time.Now,
 	}
 	if conn != nil {
-		s.ch = &chEventWriter{conn: conn, maxBuffer: 100_000}
+		w := &chEventWriter{conn: conn, maxBuffer: 100_000}
+		w.sendDHCPFn = w.sendDHCP
+		w.sendRadiusFn = w.sendRadius
+		s.ch = w
 	}
 	return s
 }
@@ -116,6 +121,10 @@ func (s *IdentityStore) Lookup(ip string) (macToken, userToken string) {
 //	                         releasing MAC (ignore a stale release for an IP that
 //	                         has already been reassigned)
 //
+// Newest-event-wins: an event older than the binding it would change is ignored,
+// so a restart replay (offsets are in-memory, so a restart re-reads from 0) or a
+// multi-file scan applying files out of order can't roll state backward.
+//
 // The lease deadline is event time + maxLease: the audit log has no reliable
 // lease-duration column, so maxLease is the trust horizon.
 func (s *IdentityStore) applyDHCP(e DhcpEvent) {
@@ -127,9 +136,12 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 
 	switch e.EventID {
 	case 10, 11:
-		s.ipState[e.IP] = ipBinding{macToken: e.MACToken, deadline: e.EventTime.Add(s.maxLease)}
+		if b, ok := s.ipState[e.IP]; ok && e.EventTime.Before(b.eventTime) {
+			return // older than current binding: don't overwrite newer state
+		}
+		s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: e.EventTime.Add(s.maxLease)}
 	case 12:
-		if b, ok := s.ipState[e.IP]; ok && b.macToken == e.MACToken {
+		if b, ok := s.ipState[e.IP]; ok && b.macToken == e.MACToken && !e.EventTime.Before(b.eventTime) {
 			delete(s.ipState, e.IP)
 		}
 	}
@@ -139,9 +151,19 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 //
 //	Start           -> open the session for this MAC
 //	Interim-Update  -> extend it (idle bound resets)
-//	Stop            -> close it, but only if the session ID matches the open one,
-//	                   so a late Stop for a prior session can't tear down a
-//	                   re-auth that already opened a new session on the same MAC
+//	Stop            -> close it
+//
+// Newest-event-wins keeps out-of-order/replayed records from misattributing a
+// device:
+//   - Start/Interim applies when there's no binding, when it's for the same
+//     session, or when it's newer than the current binding (a newer session
+//     takes over; an Interim whose Start we never saw — e.g. after a restart —
+//     bootstraps state). An older event from a *different* session is ignored,
+//     and an older event for the *same* session must not shrink the deadline.
+//   - Stop closes the session only on an exact session-ID match (so a Stop with
+//     an empty Acct-Session-Id can only close a binding whose stored ID is also
+//     empty, never a live named session) and only if it isn't older than the
+//     binding.
 //
 // The session survives a device roaming to a new IP: the new DHCP lease points
 // the new IP at the same MAC, whose session is still open — so the user stays
@@ -155,13 +177,23 @@ func (s *IdentityStore) applyRADIUS(e RadiusEvent) {
 
 	switch e.AcctStatus {
 	case "Start", "Interim-Update":
+		if b, ok := s.macState[e.MACToken]; ok {
+			if b.sessionID == e.SessionID {
+				if e.EventTime.Before(b.eventTime) {
+					return // older same-session event: don't move the deadline backward
+				}
+			} else if e.EventTime.Before(b.eventTime) {
+				return // older event from a different session: ignore
+			}
+		}
 		s.macState[e.MACToken] = macBinding{
 			userToken: e.UserToken,
 			sessionID: e.SessionID,
+			eventTime: e.EventTime,
 			deadline:  e.EventTime.Add(s.maxSession),
 		}
 	case "Stop":
-		if b, ok := s.macState[e.MACToken]; ok && (b.sessionID == e.SessionID || e.SessionID == "") {
+		if b, ok := s.macState[e.MACToken]; ok && b.sessionID == e.SessionID && !e.EventTime.Before(b.eventTime) {
 			delete(s.macState, e.MACToken)
 		}
 	}
@@ -209,7 +241,17 @@ func (s *IdentityStore) StartPoller(ctx context.Context) {
 // scan reads newly-appended lines from every file in both log directories,
 // applies the parsed events, flushes them to ClickHouse, then evicts expired
 // bindings. It is only ever called from the poller goroutine.
+//
+// It recovers from any panic: the poller parses untrusted log input and has no
+// supervisor, so an unhandled panic would silently kill identity ingestion for
+// the rest of the process lifetime. A recovered scan just resumes next tick.
 func (s *IdentityStore) scan() {
+	defer func() {
+		if r := recover(); r != nil {
+			identityScanPanics.Inc()
+			slog.Error("identity: scan panicked, recovered", "panic", r)
+		}
+	}()
 	s.scanDir(s.npsDir, sourceNPS)
 	s.scanDir(s.dhcpDir, sourceDHCP)
 	if s.ch != nil {
@@ -221,6 +263,10 @@ func (s *IdentityStore) scan() {
 const (
 	sourceNPS  = "nps"
 	sourceDHCP = "dhcp"
+
+	// maxScanReadBytes caps how much of one file's unread tail a single scan
+	// pulls into memory, so a cold start over a large backlog can't OOM.
+	maxScanReadBytes = 8 << 20 // 8 MB
 )
 
 func (s *IdentityStore) scanDir(dir, source string) {
@@ -267,7 +313,10 @@ func (s *IdentityStore) readAppended(path, source string) {
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return
 	}
-	data, err := io.ReadAll(f)
+	// Bound the read: a cold start over months of accumulated logs would otherwise
+	// pull the whole backlog into memory at once. Cap it, advance only past the
+	// last complete line, and let the next scan continue from there.
+	data, err := io.ReadAll(io.LimitReader(f, maxScanReadBytes))
 	if err != nil {
 		return
 	}
@@ -328,22 +377,43 @@ func (s *IdentityStore) ingestDHCP(line string) {
 // append-only forensic source of truth, but volume is tiny (thousands/day), so
 // this stays deliberately simple: buffer within a scan, flush at scan end, and
 // on a ClickHouse error keep the batch to retry next scan (bounded so a long
-// outage can't grow it without limit). It is touched only by the poller
-// goroutine, so it needs no lock — and it stays entirely separate from the
+// outage can't grow it without limit). It stays entirely separate from the
 // flow-path BatchWriter.
+//
+// The poller goroutine drives add/flush during normal operation; the shutdown
+// drain (IdentityStore.FinalFlush) also calls flush from main's goroutine, which
+// can overlap an in-flight poller scan, so a mutex guards the buffers.
 type chEventWriter struct {
 	conn      driver.Conn
+	mu        sync.Mutex
 	dhcp      []DhcpEvent
 	radius    []RadiusEvent
 	maxBuffer int
+
+	// sendDHCPFn / sendRadiusFn perform the actual ClickHouse write. They're
+	// fields (defaulted to the real methods in NewIdentityStore) so tests can stub
+	// the round-trip, matching the flow BatchWriter's `send` field pattern.
+	sendDHCPFn   func([]DhcpEvent) error
+	sendRadiusFn func([]RadiusEvent) error
 }
 
-func (w *chEventWriter) addDHCP(e DhcpEvent)     { w.dhcp = append(w.dhcp, e) }
-func (w *chEventWriter) addRadius(e RadiusEvent) { w.radius = append(w.radius, e) }
+func (w *chEventWriter) addDHCP(e DhcpEvent) {
+	w.mu.Lock()
+	w.dhcp = append(w.dhcp, e)
+	w.mu.Unlock()
+}
+
+func (w *chEventWriter) addRadius(e RadiusEvent) {
+	w.mu.Lock()
+	w.radius = append(w.radius, e)
+	w.mu.Unlock()
+}
 
 func (w *chEventWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if len(w.dhcp) > 0 {
-		if err := w.sendDHCP(w.dhcp); err != nil {
+		if err := w.sendDHCPFn(w.dhcp); err != nil {
 			slog.Error("identity: clickhouse dhcp write failed, will retry", "rows", len(w.dhcp), "err", err)
 			identityEventWriteErrors.Inc()
 			w.dhcp = capTail(w.dhcp, w.maxBuffer)
@@ -352,7 +422,7 @@ func (w *chEventWriter) flush() {
 		}
 	}
 	if len(w.radius) > 0 {
-		if err := w.sendRadius(w.radius); err != nil {
+		if err := w.sendRadiusFn(w.radius); err != nil {
 			slog.Error("identity: clickhouse radius write failed, will retry", "rows", len(w.radius), "err", err)
 			identityEventWriteErrors.Inc()
 			w.radius = capTail(w.radius, w.maxBuffer)
@@ -362,8 +432,13 @@ func (w *chEventWriter) flush() {
 	}
 }
 
+// eventWriteTimeout bounds a single ClickHouse insert so a hung connection can't
+// stall the poller goroutine indefinitely.
+const eventWriteTimeout = 10 * time.Second
+
 func (w *chEventWriter) sendDHCP(rows []DhcpEvent) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), eventWriteTimeout)
+	defer cancel()
 	batch, err := w.conn.PrepareBatch(ctx,
 		`INSERT INTO identity_dhcp_events (event_time, event_id, ip, mac_token, host_token)`)
 	if err != nil {
@@ -378,7 +453,8 @@ func (w *chEventWriter) sendDHCP(rows []DhcpEvent) error {
 }
 
 func (w *chEventWriter) sendRadius(rows []RadiusEvent) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), eventWriteTimeout)
+	defer cancel()
 	batch, err := w.conn.PrepareBatch(ctx,
 		`INSERT INTO identity_radius_events (event_time, acct_status, session_id, user_token, mac_token, nas_ip)`)
 	if err != nil {
@@ -390,6 +466,26 @@ func (w *chEventWriter) sendRadius(rows []RadiusEvent) error {
 		}
 	}
 	return batch.Send()
+}
+
+// FinalFlush drains any buffered identity events to ClickHouse on shutdown,
+// retrying up to attempts times (mirroring the flow BatchWriter's FinalDrain).
+// It returns the number of events still unsent — unavoidably lost — if every
+// attempt fails.
+func (s *IdentityStore) FinalFlush(attempts int) int {
+	if s.ch == nil {
+		return 0
+	}
+	for i := 0; ; i++ {
+		s.ch.flush()
+		s.ch.mu.Lock()
+		remaining := len(s.ch.dhcp) + len(s.ch.radius)
+		s.ch.mu.Unlock()
+		if remaining == 0 || i >= attempts-1 {
+			return remaining
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 // capTail keeps at most n most-recent elements, dropping the oldest — the

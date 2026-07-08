@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -176,6 +179,135 @@ func TestEnrichStampsIdentity(t *testing.T) {
 	}
 	if e.DstMACToken != "" || e.DstUserToken != "" {
 		t.Errorf("dst tokens = (%q,%q), want empty", e.DstMACToken, e.DstUserToken)
+	}
+}
+
+// A Stop record missing its Acct-Session-Id (SessionID == "") must not tear down
+// a live named session on the same MAC — it may only close a binding whose
+// stored session ID is also empty.
+func TestStopEmptySessionDoesNotCloseNamedSession(t *testing.T) {
+	s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+	mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+	user := s.tok.UserToken("jdoe")
+	s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.1", MACToken: mac})
+	s.applyRADIUS(RadiusEvent{EventTime: identBase, AcctStatus: "Start", SessionID: "S1", UserToken: user, MACToken: mac})
+
+	s.applyRADIUS(RadiusEvent{EventTime: identBase.Add(time.Hour), AcctStatus: "Stop", SessionID: "", UserToken: user, MACToken: mac})
+	*clk = identBase.Add(2 * time.Hour)
+	if m, u := s.Lookup("10.0.0.1"); m != mac || u != user {
+		t.Fatalf("(%q,%q), want (%q,%q) — empty-session Stop must not close a named session", m, u, mac, user)
+	}
+}
+
+// Newest-event-wins for RADIUS: a stale older Interim from a prior session must
+// not clobber a newer active session, while an Interim whose Start we never saw
+// still bootstraps state.
+func TestRADIUSNewestWins(t *testing.T) {
+	t.Run("older interim from a prior session does not clobber a newer one", func(t *testing.T) {
+		s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+		mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+		userA := s.tok.UserToken("alice")
+		userB := s.tok.UserToken("bob")
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.2", MACToken: mac})
+		// Newer session S2/bob is active.
+		s.applyRADIUS(RadiusEvent{EventTime: identBase.Add(2 * time.Hour), AcctStatus: "Start", SessionID: "S2", UserToken: userB, MACToken: mac})
+		// A stale, out-of-order Interim for the prior session S1/alice arrives after.
+		s.applyRADIUS(RadiusEvent{EventTime: identBase.Add(1 * time.Hour), AcctStatus: "Interim-Update", SessionID: "S1", UserToken: userA, MACToken: mac})
+		*clk = identBase.Add(3 * time.Hour)
+		if _, u := s.Lookup("10.0.0.2"); u != userB {
+			t.Fatalf("user = %q, want %q — stale older Interim must not clobber the newer session", u, userB)
+		}
+	})
+
+	t.Run("a newer-session interim without a seen start bootstraps", func(t *testing.T) {
+		s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+		mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+		user := s.tok.UserToken("carol")
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.3", MACToken: mac})
+		// Only an Interim is seen (the Start was missed, e.g. enricher started mid-session).
+		s.applyRADIUS(RadiusEvent{EventTime: identBase.Add(time.Hour), AcctStatus: "Interim-Update", SessionID: "S9", UserToken: user, MACToken: mac})
+		*clk = identBase.Add(2 * time.Hour)
+		if _, u := s.Lookup("10.0.0.3"); u != user {
+			t.Fatalf("user = %q, want %q — a newer-session Interim must bootstrap state", u, user)
+		}
+	})
+}
+
+// Newest-event-wins for DHCP: an older event replayed (restart re-read, or a
+// multi-file scan applying files out of order) must not roll state back.
+func TestDHCPNewestWins(t *testing.T) {
+	s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+	mac1 := s.tok.MACToken("11:11:11:11:11:11")
+	mac2 := s.tok.MACToken("22:22:22:22:22:22")
+
+	// Newer assign binds the IP to mac2; an older assign (replay) to mac1 arrives after.
+	s.applyDHCP(DhcpEvent{EventTime: identBase.Add(2 * time.Hour), EventID: 10, IP: "10.0.0.4", MACToken: mac2})
+	s.applyDHCP(DhcpEvent{EventTime: identBase.Add(1 * time.Hour), EventID: 10, IP: "10.0.0.4", MACToken: mac1})
+	*clk = identBase.Add(3 * time.Hour)
+	if m, _ := s.Lookup("10.0.0.4"); m != mac2 {
+		t.Fatalf("mac = %q, want %q — older replayed assign must not overwrite newer state", m, mac2)
+	}
+
+	// A stale release older than the current binding must not close the lease.
+	s.applyDHCP(DhcpEvent{EventTime: identBase.Add(1 * time.Hour), EventID: 12, IP: "10.0.0.4", MACToken: mac2})
+	if m, _ := s.Lookup("10.0.0.4"); m != mac2 {
+		t.Fatalf("mac = %q, want %q — stale older release must not close a newer lease", m, mac2)
+	}
+}
+
+// Shutdown drain: events still buffered when the poller stopped are sent by
+// FinalFlush; if ClickHouse never recovers, FinalFlush reports the lost count.
+func TestFinalFlushDrainsBufferedEvents(t *testing.T) {
+	s, _ := newClockedStore(t, time.Hour, time.Hour)
+	sentDHCP, sentRadius := 0, 0
+	w := &chEventWriter{maxBuffer: 100}
+	w.sendDHCPFn = func(rows []DhcpEvent) error { sentDHCP += len(rows); return nil }
+	w.sendRadiusFn = func(rows []RadiusEvent) error { sentRadius += len(rows); return nil }
+	s.ch = w
+
+	w.addDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.1", MACToken: "m"})
+	w.addRadius(RadiusEvent{EventTime: identBase, AcctStatus: "Start", SessionID: "S1", MACToken: "m"})
+
+	if lost := s.FinalFlush(3); lost != 0 {
+		t.Fatalf("FinalFlush lost %d events, want 0", lost)
+	}
+	if sentDHCP != 1 || sentRadius != 1 {
+		t.Fatalf("sent dhcp=%d radius=%d, want 1/1", sentDHCP, sentRadius)
+	}
+
+	// A permanently-failing ClickHouse: FinalFlush exhausts attempts and reports loss.
+	chDown := errors.New("clickhouse down")
+	fw := &chEventWriter{maxBuffer: 100}
+	fw.sendDHCPFn = func([]DhcpEvent) error { return chDown }
+	fw.sendRadiusFn = func([]RadiusEvent) error { return chDown }
+	fw.addDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.2", MACToken: "m"})
+	s.ch = fw
+	if lost := s.FinalFlush(2); lost != 1 {
+		t.Fatalf("FinalFlush = %d, want 1 (all attempts failed)", lost)
+	}
+}
+
+// The poller has no supervisor, so a panic while parsing untrusted input must be
+// caught by scan()'s recover: the process keeps ingesting and the panic is
+// counted rather than silently killing identity for the process lifetime.
+func TestScanRecoversFromPanic(t *testing.T) {
+	dir := t.TempDir()
+	line := `<Event><Timestamp data_type="4">07/08/2026 09:15:00.100</Timestamp>` +
+		`<User-Name data_type="1">MUIC\jdoe</User-Name>` +
+		`<Calling-Station-Id data_type="1">AA-BB-CC-DD-EE-FF</Calling-Station-Id>` +
+		`<Acct-Status-Type data_type="0">1</Acct-Status-Type>` +
+		`<Acct-Session-Id data_type="1">S1</Acct-Session-Id></Event>` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "in.log"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newClockedStore(t, time.Hour, time.Hour)
+	s.npsDir = dir
+	s.tok = nil // tokenizing with a nil Tokenizer panics inside the scan
+
+	before := testutil.ToFloat64(identityScanPanics)
+	s.scan() // must not propagate the panic
+	if delta := testutil.ToFloat64(identityScanPanics) - before; delta != 1 {
+		t.Fatalf("scan panic metric delta = %v, want 1", delta)
 	}
 }
 

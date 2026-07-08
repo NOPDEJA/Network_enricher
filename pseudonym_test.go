@@ -79,6 +79,42 @@ func TestNormalizationCollapses(t *testing.T) {
 	}
 }
 
+// A WLC Calling-Station-Id that appends the SSID after a complete MAC must
+// tokenize to the same value as the bare MAC, while genuinely malformed input
+// (too short, too long, non-MAC garbage) yields no token.
+func TestMACNormalizationLengthAndSSID(t *testing.T) {
+	tok := newTestTokenizer(t, "k")
+	want := tok.MACToken("aabbccddeeff")
+	if want == "" {
+		t.Fatal("bare MAC produced no token")
+	}
+
+	sameAsBare := []string{
+		"AA-BB-CC-DD-EE-FF:MUIC-WiFi", // dash MAC + SSID suffix (SSID has stray hex: C, F)
+		"aabbccddeeff:eduroam",        // bare MAC + SSID suffix
+		"AA-BB-CC-DD-EE-FF",           // plain, no SSID
+		"aa:bb:cc:dd:ee:ff",           // colon MAC, no SSID (only 2 hex before first ':')
+	}
+	for _, in := range sameAsBare {
+		if got := tok.MACToken(in); got != want {
+			t.Errorf("MACToken(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	noToken := []string{
+		"aabbccddee",     // 10 hex, too short
+		"aabbccddeeffaa", // 14 hex, too long
+		"not-a-mac",      // garbage
+		"MUIC-WiFi",      // SSID only
+		"zzzzzzzzzzzz",   // right length, no hex
+	}
+	for _, in := range noToken {
+		if got := tok.MACToken(in); got != "" {
+			t.Errorf("MACToken(%q) = %q, want empty", in, got)
+		}
+	}
+}
+
 // Empty / separator-only inputs yield no token, so callers read "" as "no identity".
 func TestNormalizationEmpty(t *testing.T) {
 	tok := newTestTokenizer(t, "k")

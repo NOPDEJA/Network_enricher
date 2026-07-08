@@ -225,15 +225,20 @@ func applySchema(conn driver.Conn) error {
 		// Identity event tables: append-only forensic source of truth for the
 		// DHCP+RADIUS join. Volume is tiny (thousands/day). MAC and username are
 		// stored only as pseudonymous tokens.
+		// ReplacingMergeTree + a fully-identifying ORDER BY makes replay idempotent:
+		// offsets are in-memory only, so a restart re-reads the logs from byte 0 and
+		// re-inserts every event — identical rows collapse on merge. Dedup is
+		// eventual (merge-time), so exact forensic queries should use FINAL or
+		// GROUP BY.
 		`CREATE TABLE IF NOT EXISTS identity_dhcp_events (
 			event_time DateTime,
 			event_id   UInt16,
 			ip         String,
 			mac_token  String,
 			host_token String
-		) ENGINE = MergeTree()
+		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
-		ORDER BY (ip, event_time)
+		ORDER BY (ip, event_time, event_id, mac_token)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS identity_radius_events (
@@ -243,9 +248,9 @@ func applySchema(conn driver.Conn) error {
 			user_token  String,
 			mac_token   String,
 			nas_ip      String
-		) ENGINE = MergeTree()
+		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
-		ORDER BY (mac_token, event_time)
+		ORDER BY (mac_token, event_time, session_id, acct_status)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (

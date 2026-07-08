@@ -76,22 +76,45 @@ func (t *Tokenizer) HostToken(host string) string {
 	return t.token(n)
 }
 
-// normalizeMAC lowercases a MAC and strips every non-hex character so the same
-// hardware address written in any notation collapses to one token:
-// "AA-BB-CC-DD-EE-FF", "AA:BB:CC:DD:EE:FF", and "aabb.ccdd.eeff" all become
-// "aabbccddeeff". This is what lets a DHCP Calling-Station-Id join a RADIUS
-// Calling-Station-Id even though the two logs format MACs differently.
+// normalizeMAC lowercases a MAC and strips every separator so the same hardware
+// address written in any notation collapses to one token: "AA-BB-CC-DD-EE-FF",
+// "AA:BB:CC:DD:EE:FF", and "aabb.ccdd.eeff" all become "aabbccddeeff". This is
+// what lets a DHCP Calling-Station-Id join a RADIUS Calling-Station-Id even
+// though the two logs format MACs differently.
+//
+// The result must be exactly 12 hex digits; anything else (too short, too long,
+// non-MAC garbage) yields "" so it produces no token. Length validation matters
+// because some WLCs append the SSID to Calling-Station-Id, e.g.
+// "AA-BB-CC-DD-EE-FF:MUIC-WiFi" — without it, stray hex characters from the SSID
+// (the C in MUIC, the F in WiFi) would corrupt the token and silently break the
+// DHCP<->RADIUS join. When the text before the first ':' is already a complete
+// 12-hex MAC, the remainder is treated as an SSID suffix and dropped. A
+// colon-separated MAC ("aa:bb:cc:dd:ee:ff") has only 2 hex before its first ':'
+// so it falls through to normalizing the whole string.
 func normalizeMAC(mac string) string {
+	if i := strings.IndexByte(mac, ':'); i >= 0 {
+		if head := hexOnly(mac[:i]); len(head) == 12 {
+			return head
+		}
+	}
+	h := hexOnly(mac)
+	if len(h) != 12 {
+		return ""
+	}
+	return h
+}
+
+// hexOnly returns the lowercased hex digits of s, dropping every other rune.
+func hexOnly(s string) string {
 	var b strings.Builder
-	b.Grow(len(mac))
-	for _, r := range mac {
+	b.Grow(len(s))
+	for _, r := range s {
 		switch {
 		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
 			b.WriteRune(r)
 		case r >= 'A' && r <= 'F':
 			b.WriteRune(r + ('a' - 'A'))
 		}
-		// Every other rune (separators, spaces) is dropped.
 	}
 	return b.String()
 }

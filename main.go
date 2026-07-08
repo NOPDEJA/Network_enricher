@@ -409,5 +409,12 @@ func main() {
 			slog.Error("shutdown: clickhouse unreachable, rows lost", "rows", lost)
 		}
 	}
+	if identity != nil {
+		// The poller stopped on ctx cancel with its last scan's events possibly
+		// still buffered — drain them to the forensic event tables before exit.
+		if lost := identity.FinalFlush(5); lost > 0 {
+			slog.Error("shutdown: clickhouse unreachable, identity events lost", "events", lost)
+		}
+	}
 	slog.Info("shutting down")
 }
