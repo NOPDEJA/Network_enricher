@@ -19,6 +19,14 @@ CREATE TABLE IF NOT EXISTS flows (
     tenant_name      LowCardinality(String),
     dst_tenant_id    UInt32,
     dst_tenant_name  LowCardinality(String),
+
+    -- Identity (who-side) tokens. Pseudonymous only: never a raw username/MAC.
+    -- src_* attribute the source address, dst_* the destination (return half).
+    -- Empty string when the flow could not be tied to a lease/session.
+    src_mac_token    String,
+    src_user_token   String,
+    dst_mac_token    String,
+    dst_user_token   String,
     src_ip           String,
     dst_ip           String,
     src_port         UInt32,
@@ -66,6 +74,45 @@ TTL timestamp + INTERVAL 90 DAY DELETE;
 ALTER TABLE flows
     ADD COLUMN IF NOT EXISTS dst_tenant_id UInt32 AFTER tenant_name,
     ADD COLUMN IF NOT EXISTS dst_tenant_name LowCardinality(String) AFTER dst_tenant_id;
+
+-- Migration for tables created before identity (who-side) tagging.
+ALTER TABLE flows
+    ADD COLUMN IF NOT EXISTS src_mac_token String AFTER dst_tenant_name,
+    ADD COLUMN IF NOT EXISTS src_user_token String AFTER src_mac_token,
+    ADD COLUMN IF NOT EXISTS dst_mac_token String AFTER src_user_token,
+    ADD COLUMN IF NOT EXISTS dst_user_token String AFTER dst_mac_token;
+
+
+-- ============================================================
+-- Identity event tables (campus-WiFi forensics)
+-- Append-only source of truth for the DHCP + RADIUS join on MAC.
+-- Volume is tiny (thousands/day). MAC and username are stored ONLY
+-- as pseudonymous tokens (HMAC); the raw values never land here.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS identity_dhcp_events (
+    event_time DateTime,
+    event_id   UInt16,   -- 10 assign, 11 renew, 12 release
+    ip         String,
+    mac_token  String,
+    host_token String
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(event_time)
+ORDER BY (ip, event_time)
+TTL event_time + INTERVAL 90 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS identity_radius_events (
+    event_time  DateTime,
+    acct_status LowCardinality(String), -- Start, Interim-Update, Stop
+    session_id  String,
+    user_token  String,
+    mac_token   String,
+    nas_ip      String
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(event_time)
+ORDER BY (mac_token, event_time)
+TTL event_time + INTERVAL 90 DAY DELETE;
 
 
 -- ============================================================

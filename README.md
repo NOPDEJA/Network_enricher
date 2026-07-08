@@ -151,6 +151,11 @@ docker compose -f docker_compose.yml down
 | `tenant_test.go` | Unit tests for CIDR lookup and longest-prefix matching |
 | `threat.go` | `ThreatStore` — Feodo Tracker CSV download, IP→label map, hot-reload |
 | `threat_test.go` | Unit tests for threat label lookup and CSV parsing |
+| `pseudonym.go` | `Tokenizer` — HMAC-SHA256 pseudonymization of usernames/MACs/hostnames, fail-closed key load |
+| `npslog.go` | NPS DTS-XML RADIUS accounting parser → tokenized `RadiusEvent` |
+| `dhcplog.go` | Windows DHCP audit-log parser → tokenized `DhcpEvent` |
+| `identity.go` | `IdentityStore` — ip→mac→user current-state join, hot-path `Lookup`, file poller, ClickHouse event writer |
+| `pseudonym_test.go` / `npslog_test.go` / `dhcplog_test.go` / `identity_test.go` | Identity unit + golden tests (`testdata/nps`, `testdata/dhcp` fixtures) |
 | `dedup.go` | `DedupStore` — 7-tuple dedup, 16-shard LRU with TTL (hashicorp/golang-lru v2) |
 | `dedup_test.go` | Unit tests for dedup hit/miss, TTL expiry, exporter distinction |
 | `batchwriter.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL |
@@ -183,6 +188,11 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `GEOIP_ASN_PATH` | _(disabled)_ | Path to `GeoLite2-ASN.mmdb` |
 | `TENANT_CONFIG_PATH` | _(disabled)_ | Path to tenant YAML config |
 | `THREAT_FEED_URL` | Feodo Tracker CSV | Override threat intel feed URL |
+| `IDENTITY_TOKEN_KEY_FILE` | _(disabled)_ | Path to the HMAC key file for identity pseudonymization. **Required** to enable identity; empty/missing keeps identity off (fail closed) |
+| `IDENTITY_NPS_DIR` | _(disabled)_ | Directory of NPS DTS-XML accounting logs to tail |
+| `IDENTITY_DHCP_DIR` | _(disabled)_ | Directory of Windows DHCP audit logs to tail |
+| `IDENTITY_MAX_LEASE` | `24h` | Max age a DHCP lease is trusted without renewal (Go duration) |
+| `IDENTITY_MAX_SESSION` | `24h` | Idle bound on a RADIUS session with no Stop (Go duration) |
 | `DEDUP_SIZE` | `1000000` | Max entries in the dedup LRU |
 | `DEDUP_TTL_SECONDS` | `60` | Seconds before a flow 7-tuple expires from dedup |
 | `DEDUP_DISABLE` | `false` | Bypass dedup entirely (load-test only — lets every flow reach enrich+write) |
@@ -205,6 +215,48 @@ tenants:
     name: "guest-wifi"
     subnets:
       - "192.168.100.0/24"
+```
+
+### Identity enrichment (scaffold)
+
+Adds the **"who"** side to flows for campus-WiFi forensics. MUIC WiFi
+authenticates via 802.1X against Microsoft NPS (RADIUS), but RADIUS accounting
+carries only the client's **MAC**, never its IP. So identity is a two-hop join
+on the MAC:
+
+```
+flow src/dst IP  --(DHCP lease)-->  MAC  --(RADIUS session)-->  username
+```
+
+`identity.go` keeps a small in-memory *current-state* view — `ip → macToken`
+from the DHCP audit log, `macToken → userToken` from the NPS accounting log —
+and a poller tails both log directories every 30 s (tracking per-file byte
+offsets, re-reading from 0 on rotation). Each flow does two cheap `RWMutex` map
+reads to stamp four token columns (`src_mac_token`, `src_user_token`,
+`dst_mac_token`, `dst_user_token`); both directions are resolved because the
+client is the source outbound and the destination on the return half. The raw
+events are also appended to `identity_dhcp_events` / `identity_radius_events` in
+ClickHouse as the forensic source of truth.
+
+**Privacy — pseudonymous only ("instant noodle").** Usernames, MACs, and
+hostnames are **never** stored in the clear. Each is replaced at parse time by
+`token = hex(HMAC-SHA256(key, normalize(id)))[:32]`, so the logs never instantly
+reveal who — resolving a token back to a person requires the secret key held
+outside the pipeline. Normalization collapses every notation of one identifier
+to one token (MAC separators stripped and lowercased; `DOMAIN\user` / `user@realm`
+reduced to `user`), which is exactly what lets a DHCP MAC join a RADIUS MAC.
+
+**Fail closed** (the one deliberate inversion of the project's fail-open rule):
+if `IDENTITY_TOKEN_KEY_FILE` is missing or empty the entire identity subsystem
+stays disabled and no raw identifier can ever be written — but **flows keep
+flowing** untouched either way. Identity turns on only when the key file *and*
+at least one of `IDENTITY_NPS_DIR` / `IDENTITY_DHCP_DIR` are set.
+
+Run the identity tests (they use synthetic fixtures under `testdata/nps` and
+`testdata/dhcp`, no external services):
+
+```bash
+go test -run 'Tokenizer|NPS|DHCP|Identity|RADIUS|Lease|Roam|Ingest|NoRaw|FailOpen' -v .
 ```
 
 ---
@@ -433,6 +485,11 @@ Two options, in order of effort:
 | `enricher_clickhouse_flushes_total` | Counter | ClickHouse batch flush operations |
 | `enricher_clickhouse_rows_written_total` | Counter | Rows written to ClickHouse |
 | `enricher_threat_ips_loaded` | Gauge | Current count of IPs in the threat store |
+| `enricher_identity_events_parsed_total{source}` | Counter | Identity log events parsed+applied (`nps`/`dhcp`) |
+| `enricher_identity_parse_errors_total{source}` | Counter | Malformed identity log lines skipped (`nps`/`dhcp`) |
+| `enricher_identity_tag_hits_total` | Counter | Flows where identity resolved ≥1 token |
+| `enricher_identity_tag_misses_total` | Counter | Flows where identity resolved no token |
+| `enricher_identity_event_write_errors_total` | Counter | ClickHouse identity-event writes that failed (retried next scan) |
 
 ---
 

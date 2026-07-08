@@ -16,6 +16,7 @@ import (
 	// goflow2 record with far fewer allocations — the JSON decode and its GC
 	// pressure were the top per-flow CPU cost in the worker pool (see Unmarshal
 	// benchmark). API-compatible, so call sites stay json.Unmarshal.
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	json "github.com/goccy/go-json"
 	"github.com/segmentio/kafka-go"
 )
@@ -44,7 +45,7 @@ type FlowMessage struct {
 	SequenceNum     uint32 `json:"sequence_num"`
 
 	// Populated by NetFlow v9 and IPFIX, zero/empty in v5
-	Etype               string `json:"etype"`                 // "IPv4" or "IPv6"
+	Etype               string `json:"etype"` // "IPv4" or "IPv6"
 	SrcVlan             uint32 `json:"src_vlan"`
 	DstVlan             uint32 `json:"dst_vlan"`
 	ForwardingStatus    uint32 `json:"forwarding_status"`
@@ -63,6 +64,10 @@ type EnrichedFlow struct {
 	TenantName      string
 	DstTenantID     uint32 // tenant owning DstAddr (inbound attribution)
 	DstTenantName   string
+	SrcMACToken     string // device/user behind SrcAddr (pseudonymous tokens)
+	SrcUserToken    string
+	DstMACToken     string // device/user behind DstAddr (return half of a conversation)
+	DstUserToken    string
 	IsThreatSrc     bool
 	IsThreatDst     bool
 	ThreatLabel     string
@@ -71,7 +76,7 @@ type EnrichedFlow struct {
 	ExpandedPackets uint64
 }
 
-func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore) EnrichedFlow {
+func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore, identity *IdentityStore) EnrichedFlow {
 	e := EnrichedFlow{FlowMessage: flow}
 
 	// Parse once and share across enrichers — ParseIP allocates, so skip it
@@ -90,6 +95,21 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 			// dst match covers the return/inbound half of the conversation.
 			e.TenantID, e.TenantName = tenant.Lookup(srcIP)
 			e.DstTenantID, e.DstTenantName = tenant.Lookup(dstIP)
+		}
+	}
+
+	// Identity (who-side) tagging: resolve BOTH addresses to pseudonymous
+	// device/user tokens. The client is the source on the outbound half of a
+	// conversation and the destination on the return half, same as dst-tenant
+	// attribution. Two cheap RWMutex map reads each, no I/O; unbound addresses
+	// yield empty tokens and the flow proceeds untouched (fail open).
+	if identity != nil {
+		e.SrcMACToken, e.SrcUserToken = identity.Lookup(flow.SrcAddr)
+		e.DstMACToken, e.DstUserToken = identity.Lookup(flow.DstAddr)
+		if e.SrcMACToken != "" || e.DstMACToken != "" {
+			identityTagHits.Inc()
+		} else {
+			identityTagMisses.Inc()
 		}
 	}
 
@@ -140,6 +160,15 @@ func boolEnv(key string, fallback bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
+		}
+	}
+	return fallback
+}
+
+func durEnv(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return fallback
@@ -216,6 +245,34 @@ func main() {
 		writer.StartFlushTimer(ctx)
 	}
 
+	// Identity (who-side) enrichment — optional and FAIL CLOSED. Enabled only when
+	// IDENTITY_TOKEN_KEY_FILE plus at least one log dir are set. If the token key
+	// can't be loaded the subsystem stays off entirely so no raw username/MAC can
+	// ever be written — but flows keep flowing (identity stays nil).
+	var identity *IdentityStore
+	keyFile := os.Getenv("IDENTITY_TOKEN_KEY_FILE")
+	npsDir := os.Getenv("IDENTITY_NPS_DIR")
+	dhcpDir := os.Getenv("IDENTITY_DHCP_DIR")
+	if keyFile != "" && (npsDir != "" || dhcpDir != "") {
+		tok, terr := NewTokenizer(keyFile)
+		if terr != nil {
+			slog.Error("identity token key load failed, continuing without identity (fail closed)", "err", terr)
+		} else {
+			var conn driver.Conn
+			if writer != nil {
+				conn = writer.conn
+			}
+			identity = NewIdentityStore(tok, npsDir, dhcpDir,
+				durEnv("IDENTITY_MAX_LEASE", 24*time.Hour),
+				durEnv("IDENTITY_MAX_SESSION", 24*time.Hour),
+				conn)
+			identity.StartPoller(ctx)
+			slog.Info("identity enrichment enabled", "nps_dir", npsDir, "dhcp_dir", dhcpDir, "clickhouse", conn != nil)
+		}
+	} else {
+		slog.Info("identity enrichment disabled", "reason", "IDENTITY_TOKEN_KEY_FILE + a log dir not set")
+	}
+
 	dedup := NewDedupStore(
 		intEnv("DEDUP_SIZE", 1_000_000),
 		time.Duration(intEnv("DEDUP_TTL_SECONDS", 60))*time.Second,
@@ -267,7 +324,7 @@ func main() {
 					continue
 				}
 
-				e := enrich(flow, geo, tenant, threat)
+				e := enrich(flow, geo, tenant, threat, identity)
 				if e.IsThreatSrc {
 					threatHits.WithLabelValues("src").Inc()
 				}

@@ -49,7 +49,7 @@ func TestEnrich_SamplingExpansion(t *testing.T) {
 				Packets:      tt.packets,
 			}
 			// No enrichers — isolate the sampling logic.
-			e := enrich(flow, nil, nil, nil)
+			e := enrich(flow, nil, nil, nil, nil)
 			if e.IsSampled != tt.wantSampled {
 				t.Errorf("IsSampled = %v, want %v", e.IsSampled, tt.wantSampled)
 			}
