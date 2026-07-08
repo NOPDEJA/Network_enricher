@@ -1,0 +1,18 @@
+Microsoft DHCP Service Activity Log
+
+
+Event ID	Meaning
+00	The log was started.
+01	The log was stopped.
+10	A new IP address was leased to a client.
+11	A lease was renewed by a client.
+12	A lease was released by a client.
+24	IP address cleanup operation has begun.
+
+QResult: 0: NoQuarantine, 1:Quarantine, 2:Drop Packet, 3:Probation, 6:No Quarantine Information.
+
+ID,Date,Time,Description,IP Address,Host Name,MAC Address,User Name,TransactionID,QResult,Probationtime,CorrelationID,Dhcid.
+10,07/08/26,09:16:00,Assign,10.10.20.30,laptop-01.muic.local,AABBCCDDEEFF,,1001,6,0,,
+11,07/08/26,09:45:00,Renew,10.10.20.30,laptop-01.muic.local,AABBCCDDEEFF,,1002,6,0,,
+24,07/08/26,09:50:00,Database Cleanup Begin,,,,,0000,6,0,,
+12,07/08/26,10:05:00,Release,10.10.20.30,laptop-01.muic.local,AABBCCDDEEFF,,1003,6,0,,

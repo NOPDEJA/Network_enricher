@@ -68,7 +68,7 @@ func BenchmarkEnrichRealStores(b *testing.B) {
 	flow := sampleFlow(0)
 	b.ReportAllocs()
 	for b.Loop() {
-		enrich(flow, geo, tenant, nil)
+		enrich(flow, geo, tenant, nil, nil)
 	}
 }
 
@@ -98,7 +98,7 @@ func BenchmarkConsumePath(b *testing.B) {
 		if dedup.IsDuplicate(f) {
 			continue
 		}
-		e := enrich(f, geo, tenant, nil)
+		e := enrich(f, geo, tenant, nil, nil)
 		_ = toFlowRow(e)
 	}
 }
@@ -127,7 +127,7 @@ func BenchmarkConsumePathParallel(b *testing.B) {
 				b.Fatal(err)
 			}
 			if !dedup.IsDuplicate(f) {
-				e := enrich(f, geo, tenant, nil)
+				e := enrich(f, geo, tenant, nil, nil)
 				_ = toFlowRow(e)
 			}
 			i++

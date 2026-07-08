@@ -19,6 +19,10 @@ type FlowRow struct {
 	TenantName      string
 	DstTenantID     uint32
 	DstTenantName   string
+	SrcMACToken     string
+	SrcUserToken    string
+	DstMACToken     string
+	DstUserToken    string
 	SrcIP           string
 	DstIP           string
 	SrcPort         uint32
@@ -73,6 +77,10 @@ func toFlowRow(e EnrichedFlow) FlowRow {
 		TenantName:      e.TenantName,
 		DstTenantID:     e.DstTenantID,
 		DstTenantName:   e.DstTenantName,
+		SrcMACToken:     e.SrcMACToken,
+		SrcUserToken:    e.SrcUserToken,
+		DstMACToken:     e.DstMACToken,
+		DstUserToken:    e.DstUserToken,
 		SrcIP:           e.SrcAddr,
 		DstIP:           e.DstAddr,
 		SrcPort:         e.SrcPort,
@@ -109,7 +117,7 @@ type BatchWriter struct {
 	mu         sync.Mutex
 	buffer     []FlowRow
 	maxSize    int
-	maxBuffer  int       // hard cap: beyond this the oldest rows are dropped to bound memory
+	maxBuffer  int // hard cap: beyond this the oldest rows are dropped to bound memory
 	maxAge     time.Duration
 	retryAfter time.Time // skip send attempts until this time after a failure (back-off)
 
@@ -163,6 +171,10 @@ func applySchema(conn driver.Conn) error {
 			tenant_name      LowCardinality(String),
 			dst_tenant_id    UInt32,
 			dst_tenant_name  LowCardinality(String),
+			src_mac_token    String,
+			src_user_token   String,
+			dst_mac_token    String,
+			dst_user_token   String,
 			src_ip           String,
 			dst_ip           String,
 			src_port         UInt32,
@@ -201,6 +213,45 @@ func applySchema(conn driver.Conn) error {
 		`ALTER TABLE flows
 			ADD COLUMN IF NOT EXISTS dst_tenant_id UInt32 AFTER tenant_name,
 			ADD COLUMN IF NOT EXISTS dst_tenant_name LowCardinality(String) AFTER dst_tenant_id`,
+
+		// Migration for tables created before identity (who-side) tagging. Columns
+		// are empty for untagged flows, so they're additive and safe on old tables.
+		`ALTER TABLE flows
+			ADD COLUMN IF NOT EXISTS src_mac_token String AFTER dst_tenant_name,
+			ADD COLUMN IF NOT EXISTS src_user_token String AFTER src_mac_token,
+			ADD COLUMN IF NOT EXISTS dst_mac_token String AFTER src_user_token,
+			ADD COLUMN IF NOT EXISTS dst_user_token String AFTER dst_mac_token`,
+
+		// Identity event tables: append-only forensic source of truth for the
+		// DHCP+RADIUS join. Volume is tiny (thousands/day). MAC and username are
+		// stored only as pseudonymous tokens.
+		// ReplacingMergeTree + a fully-identifying ORDER BY makes replay idempotent:
+		// offsets are in-memory only, so a restart re-reads the logs from byte 0 and
+		// re-inserts every event — identical rows collapse on merge. Dedup is
+		// eventual (merge-time), so exact forensic queries should use FINAL or
+		// GROUP BY.
+		`CREATE TABLE IF NOT EXISTS identity_dhcp_events (
+			event_time DateTime,
+			event_id   UInt16,
+			ip         String,
+			mac_token  String,
+			host_token String
+		) ENGINE = ReplacingMergeTree()
+		PARTITION BY toYYYYMMDD(event_time)
+		ORDER BY (ip, event_time, event_id, mac_token)
+		TTL event_time + INTERVAL 90 DAY DELETE`,
+
+		`CREATE TABLE IF NOT EXISTS identity_radius_events (
+			event_time  DateTime,
+			acct_status LowCardinality(String),
+			session_id  String,
+			user_token  String,
+			mac_token   String,
+			nas_ip      String
+		) ENGINE = ReplacingMergeTree()
+		PARTITION BY toYYYYMMDD(event_time)
+		ORDER BY (mac_token, event_time, session_id, acct_status)
+		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (
 			timestamp    DateTime,
@@ -355,6 +406,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	// physical column order in a table that was migrated with ALTER ADD COLUMN.
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO flows (
 		timestamp, tenant_id, tenant_name, dst_tenant_id, dst_tenant_name,
+		src_mac_token, src_user_token, dst_mac_token, dst_user_token,
 		src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets,
 		src_country, src_city, src_lat, src_lon, src_asn, src_org,
 		dst_country, dst_city, dst_lat, dst_lon, dst_asn, dst_org,
@@ -370,6 +422,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	for _, r := range rows {
 		if err := batch.Append(
 			r.Timestamp, r.TenantID, r.TenantName, r.DstTenantID, r.DstTenantName,
+			r.SrcMACToken, r.SrcUserToken, r.DstMACToken, r.DstUserToken,
 			r.SrcIP, r.DstIP, r.SrcPort, r.DstPort, r.Protocol,
 			r.Bytes, r.Packets,
 			r.SrcCountry, r.SrcCity, r.SrcLat, r.SrcLon, r.SrcASN, r.SrcOrg,

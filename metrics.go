@@ -51,6 +51,30 @@ var (
 		Name: "enricher_threat_ips_loaded",
 		Help: "Current number of IPs in the threat intel store.",
 	})
+	identityEventsParsed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "enricher_identity_events_parsed_total",
+		Help: "Identity log events parsed and applied, labeled by source (nps or dhcp).",
+	}, []string{"source"})
+	identityParseErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "enricher_identity_parse_errors_total",
+		Help: "Malformed identity log lines skipped, labeled by source (nps or dhcp).",
+	}, []string{"source"})
+	identityTagHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_identity_tag_hits_total",
+		Help: "Flows where identity lookup resolved at least one MAC/user token.",
+	})
+	identityTagMisses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_identity_tag_misses_total",
+		Help: "Flows where identity lookup resolved no token for either address.",
+	})
+	identityEventWriteErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_identity_event_write_errors_total",
+		Help: "ClickHouse write attempts for identity events that failed; the batch is retried next scan.",
+	})
+	identityScanPanics = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_identity_scan_panics_total",
+		Help: "Identity poller scans that panicked and were recovered.",
+	})
 )
 
 func registerMetrics() {
@@ -65,6 +89,12 @@ func registerMetrics() {
 		chRowsDropped,
 		chBufferRows,
 		threatIPsLoaded,
+		identityEventsParsed,
+		identityParseErrors,
+		identityTagHits,
+		identityTagMisses,
+		identityEventWriteErrors,
+		identityScanPanics,
 	)
 }
 
