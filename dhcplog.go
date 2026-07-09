@@ -21,8 +21,8 @@ type DhcpEvent struct {
 var errShortDHCPRow = errors.New("dhcp row has too few fields")
 
 // dhcpTimeLayout matches the Windows DHCP audit format: MM/DD/YY then HH:MM:SS
-// in two separate CSV columns. Parsed as UTC — see the timezone note in
-// identity.go.
+// in two separate CSV columns. Interpreted in the parser's *time.Location — see
+// the LOG_TZ timezone note in identity.go.
 const dhcpTimeLayout = "01/02/06 15:04:05"
 
 // DHCP audit CSV column positions (IPv4 DhcpSrvLog-*.log):
@@ -52,7 +52,7 @@ const (
 // parse as an integer, so they fall through as silent skips without needing to
 // detect where the CSV section begins — which also survives log rotation, where
 // a scan may start mid-file with no preamble at all.
-func parseDHCPLine(line string, tok *Tokenizer) (DhcpEvent, bool, error) {
+func parseDHCPLine(line string, tok *Tokenizer, loc *time.Location) (DhcpEvent, bool, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return DhcpEvent{}, false, nil
@@ -73,8 +73,8 @@ func parseDHCPLine(line string, tok *Tokenizer) (DhcpEvent, bool, error) {
 		return DhcpEvent{}, false, errShortDHCPRow
 	}
 
-	ts, err := time.Parse(dhcpTimeLayout,
-		strings.TrimSpace(fields[dhcpColDate])+" "+strings.TrimSpace(fields[dhcpColTime]))
+	ts, err := time.ParseInLocation(dhcpTimeLayout,
+		strings.TrimSpace(fields[dhcpColDate])+" "+strings.TrimSpace(fields[dhcpColTime]), loc)
 	if err != nil {
 		return DhcpEvent{}, false, errInvalidTimestamp
 	}

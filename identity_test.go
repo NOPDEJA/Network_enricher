@@ -17,7 +17,7 @@ var identBase = time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 func newClockedStore(t *testing.T, maxLease, maxSession time.Duration) (*IdentityStore, *time.Time) {
 	t.Helper()
 	tok := newTestTokenizer(t, "identity-test-key")
-	s := NewIdentityStore(tok, "", "", maxLease, maxSession, nil)
+	s := NewIdentityStore(tok, "", "", time.UTC, time.UTC, maxLease, maxSession, nil)
 	clk := new(time.Time)
 	*clk = identBase
 	s.now = func() time.Time { return *clk }

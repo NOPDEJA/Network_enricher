@@ -20,7 +20,7 @@ func TestParseDHCPFixture(t *testing.T) {
 	var got []DhcpEvent
 	var errs int
 	for _, line := range strings.Split(string(data), "\n") {
-		ev, ok, err := parseDHCPLine(line, tok)
+		ev, ok, err := parseDHCPLine(line, tok, time.UTC)
 		if err != nil {
 			errs++
 			continue
@@ -77,7 +77,7 @@ func TestParseDHCPLineEdgeCases(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, ok, err := parseDHCPLine(tc.line, tok)
+			_, ok, err := parseDHCPLine(tc.line, tok, time.UTC)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}

@@ -28,10 +28,12 @@ import (
 // pseudonym.go); raw identifiers are turned into tokens in the parsers and
 // never enter this store.
 //
-// Timezone note: log timestamps are parsed as UTC (see npslog.go / dhcplog.go).
-// Real Windows NPS/DHCP servers write local time; a production deployment whose
-// servers aren't on UTC should have the parse location set to the server's
-// zone. For this scaffold, treating them as UTC keeps parsing deterministic.
+// Timezone note: log timestamps carry no zone, so each parser interprets them
+// in a configured *time.Location (npsLoc / dhcpLoc), resolved at startup from
+// the LOG_TZ knob (global, with per-source NPS_LOG_TZ / DHCP_LOG_TZ overrides;
+// see logtz.go). Real Windows NPS/DHCP servers write local time — set LOG_TZ to
+// the server's zone (e.g. Asia/Bangkok) so timestamps join correctly against
+// the flows; the default is UTC. An invalid zone fails loud at startup.
 type IdentityStore struct {
 	mu       sync.RWMutex
 	ipState  map[string]ipBinding  // ip -> device holding the lease
@@ -43,6 +45,8 @@ type IdentityStore struct {
 	tok     *Tokenizer
 	npsDir  string
 	dhcpDir string
+	npsLoc  *time.Location // zone the NPS log's naive timestamps are in
+	dhcpLoc *time.Location // zone the DHCP log's naive timestamps are in
 
 	// offsets tracks per-file read position across scans. Only the single poller
 	// goroutine touches it, so it needs no lock.
@@ -70,7 +74,13 @@ type macBinding struct {
 // NewIdentityStore builds the store. conn may be nil (ClickHouse unavailable),
 // in which case events are still applied to the in-memory view for live tagging
 // but not persisted.
-func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+	if npsLoc == nil {
+		npsLoc = time.UTC
+	}
+	if dhcpLoc == nil {
+		dhcpLoc = time.UTC
+	}
 	s := &IdentityStore{
 		ipState:    make(map[string]ipBinding),
 		macState:   make(map[string]macBinding),
@@ -79,6 +89,8 @@ func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, maxLease, maxSessi
 		tok:        tok,
 		npsDir:     npsDir,
 		dhcpDir:    dhcpDir,
+		npsLoc:     npsLoc,
+		dhcpLoc:    dhcpLoc,
 		offsets:    make(map[string]int64),
 		now:        time.Now,
 	}
@@ -342,7 +354,7 @@ func (s *IdentityStore) readAppended(path, source string) {
 }
 
 func (s *IdentityStore) ingestNPS(line string) {
-	ev, ok, err := parseNPSLine(line, s.tok)
+	ev, ok, err := parseNPSLine(line, s.tok, s.npsLoc)
 	if err != nil {
 		identityParseErrors.WithLabelValues(sourceNPS).Inc()
 		return
@@ -358,7 +370,7 @@ func (s *IdentityStore) ingestNPS(line string) {
 }
 
 func (s *IdentityStore) ingestDHCP(line string) {
-	ev, ok, err := parseDHCPLine(line, s.tok)
+	ev, ok, err := parseDHCPLine(line, s.tok, s.dhcpLoc)
 	if err != nil {
 		identityParseErrors.WithLabelValues(sourceDHCP).Inc()
 		return

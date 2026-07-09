@@ -11,6 +11,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// tzdata embeds the IANA zone database in the binary so LOG_TZ names like
+	// "Asia/Bangkok" resolve via time.LoadLocation on hosts without a system
+	// zoneinfo (Windows dev boxes), not just the Ubuntu deploy host.
+	_ "time/tzdata"
 
 	// goccy/go-json is a drop-in replacement for encoding/json that decodes the
 	// goflow2 record with far fewer allocations — the JSON decode and its GC
@@ -258,11 +262,23 @@ func main() {
 		if terr != nil {
 			slog.Error("identity token key load failed, continuing without identity (fail closed)", "err", terr)
 		} else {
+			// Resolve the log timezones before wiring the store. An invalid zone is
+			// fatal: a silent UTC fallback would mis-join local-time forensic logs.
+			npsLoc, nerr := logLocation("NPS_LOG_TZ")
+			if nerr != nil {
+				slog.Error("identity: invalid NPS log timezone", "err", nerr)
+				os.Exit(1)
+			}
+			dhcpLoc, derr := logLocation("DHCP_LOG_TZ")
+			if derr != nil {
+				slog.Error("identity: invalid DHCP log timezone", "err", derr)
+				os.Exit(1)
+			}
 			var conn driver.Conn
 			if writer != nil {
 				conn = writer.conn
 			}
-			identity = NewIdentityStore(tok, npsDir, dhcpDir,
+			identity = NewIdentityStore(tok, npsDir, dhcpDir, npsLoc, dhcpLoc,
 				durEnv("IDENTITY_MAX_LEASE", 24*time.Hour),
 				durEnv("IDENTITY_MAX_SESSION", 24*time.Hour),
 				conn)
