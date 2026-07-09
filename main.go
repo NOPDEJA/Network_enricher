@@ -82,7 +82,7 @@ type EnrichedFlow struct {
 	ExpandedPackets uint64
 }
 
-func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore, identity *IdentityStore) EnrichedFlow {
+func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore, identity *IdentityStore, dns *DNSStore) EnrichedFlow {
 	e := EnrichedFlow{FlowMessage: flow}
 
 	// Parse once and share across enrichers — ParseIP allocates, so skip it
@@ -116,6 +116,21 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 			identityTagHits.Inc()
 		} else {
 			identityTagMisses.Inc()
+		}
+	}
+
+	// DNS (what-side) tagging: the client that resolved an address is the source
+	// on the outbound half and the destination on the return half — same
+	// both-directions pattern as identity/dst-tenant. src=client resolving dst
+	// gives dst_hostname; the reverse orientation gives src_hostname. Two cheap
+	// RWMutex map reads, no I/O; a miss leaves the field empty (fail open).
+	if dns != nil {
+		e.DstHostname = dns.Lookup(flow.SrcAddr, flow.DstAddr)
+		e.SrcHostname = dns.Lookup(flow.DstAddr, flow.SrcAddr)
+		if e.SrcHostname != "" || e.DstHostname != "" {
+			dnsTagHits.Inc()
+		} else {
+			dnsTagMisses.Inc()
 		}
 	}
 
@@ -291,6 +306,28 @@ func main() {
 		slog.Info("identity enrichment disabled", "reason", "IDENTITY_TOKEN_KEY_FILE + a log dir not set")
 	}
 
+	// DNS (what-side) enrichment — optional, env-gated on DNS_LOG_DIR. Hostnames
+	// are not personal data here, so there is no token key: the dir alone turns it
+	// on. Fail open — a lookup miss leaves the flow untagged.
+	var dns *DNSStore
+	if dnsDir := os.Getenv("DNS_LOG_DIR"); dnsDir != "" {
+		// Resolve the DNS log timezone; an invalid zone is fatal (see identity above).
+		dnsLoc, lerr := logLocation("DNS_LOG_TZ")
+		if lerr != nil {
+			slog.Error("dns: invalid DNS log timezone", "err", lerr)
+			os.Exit(1)
+		}
+		var conn driver.Conn
+		if writer != nil {
+			conn = writer.conn
+		}
+		dns = NewDNSStore(dnsDir, dnsLoc, conn)
+		dns.StartPoller(ctx)
+		slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "clickhouse", conn != nil)
+	} else {
+		slog.Info("dns enrichment disabled", "reason", "DNS_LOG_DIR not set")
+	}
+
 	dedup := NewDedupStore(
 		intEnv("DEDUP_SIZE", 1_000_000),
 		time.Duration(intEnv("DEDUP_TTL_SECONDS", 60))*time.Second,
@@ -342,7 +379,7 @@ func main() {
 					continue
 				}
 
-				e := enrich(flow, geo, tenant, threat, identity)
+				e := enrich(flow, geo, tenant, threat, identity, dns)
 				if e.IsThreatSrc {
 					threatHits.WithLabelValues("src").Inc()
 				}
@@ -432,6 +469,11 @@ func main() {
 		// still buffered — drain them to the forensic event tables before exit.
 		if lost := identity.FinalFlush(5); lost > 0 {
 			slog.Error("shutdown: clickhouse unreachable, identity events lost", "events", lost)
+		}
+	}
+	if dns != nil {
+		if lost := dns.FinalFlush(5); lost > 0 {
+			slog.Error("shutdown: clickhouse unreachable, dns events lost", "events", lost)
 		}
 	}
 	slog.Info("shutting down")

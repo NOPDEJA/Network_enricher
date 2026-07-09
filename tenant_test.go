@@ -79,7 +79,7 @@ func TestEnrich_TenantBothDirections(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := enrich(FlowMessage{SrcAddr: tc.src, DstAddr: tc.dst}, nil, s, nil, nil)
+			e := enrich(FlowMessage{SrcAddr: tc.src, DstAddr: tc.dst}, nil, s, nil, nil, nil)
 			if e.TenantID != tc.srcID || e.TenantName != tc.srcName {
 				t.Errorf("src tenant = (%d, %q), want (%d, %q)", e.TenantID, e.TenantName, tc.srcID, tc.srcName)
 			}

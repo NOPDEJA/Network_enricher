@@ -21,7 +21,7 @@ func sampleFlow(i int) FlowMessage {
 func BenchmarkEnrich(b *testing.B) {
 	flow := sampleFlow(0)
 	for b.Loop() {
-		enrich(flow, nil, nil, nil, nil)
+		enrich(flow, nil, nil, nil, nil, nil)
 	}
 }
 
