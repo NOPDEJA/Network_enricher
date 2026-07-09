@@ -17,7 +17,7 @@ var identBase = time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 func newClockedStore(t *testing.T, maxLease, maxSession time.Duration) (*IdentityStore, *time.Time) {
 	t.Helper()
 	tok := newTestTokenizer(t, "identity-test-key")
-	s := NewIdentityStore(tok, "", "", maxLease, maxSession, nil)
+	s := NewIdentityStore(tok, "", "", time.UTC, time.UTC, maxLease, maxSession, nil)
 	clk := new(time.Time)
 	*clk = identBase
 	s.now = func() time.Time { return *clk }
@@ -154,7 +154,7 @@ func TestIdentityFailOpen(t *testing.T) {
 	}
 
 	in := FlowMessage{SrcAddr: "203.0.113.99", DstAddr: "8.8.8.8", Bytes: 1500}
-	e := enrich(in, nil, nil, nil, s)
+	e := enrich(in, nil, nil, nil, s, nil)
 	if e.SrcMACToken != "" || e.SrcUserToken != "" || e.DstMACToken != "" || e.DstUserToken != "" {
 		t.Error("unknown addresses should stamp no tokens")
 	}
@@ -173,7 +173,7 @@ func TestEnrichStampsIdentity(t *testing.T) {
 	s.applyRADIUS(RadiusEvent{EventTime: identBase, AcctStatus: "Start", SessionID: "S1", UserToken: user, MACToken: mac})
 	*clk = identBase.Add(30 * time.Minute)
 
-	e := enrich(FlowMessage{SrcAddr: "10.10.20.30", DstAddr: "8.8.8.8"}, nil, nil, nil, s)
+	e := enrich(FlowMessage{SrcAddr: "10.10.20.30", DstAddr: "8.8.8.8"}, nil, nil, nil, s, nil)
 	if e.SrcMACToken != mac || e.SrcUserToken != user {
 		t.Errorf("src tokens = (%q,%q), want (%q,%q)", e.SrcMACToken, e.SrcUserToken, mac, user)
 	}

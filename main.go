@@ -11,6 +11,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// tzdata embeds the IANA zone database in the binary so LOG_TZ names like
+	// "Asia/Bangkok" resolve via time.LoadLocation on hosts without a system
+	// zoneinfo (Windows dev boxes), not just the Ubuntu deploy host.
+	_ "time/tzdata"
 
 	// goccy/go-json is a drop-in replacement for encoding/json that decodes the
 	// goflow2 record with far fewer allocations — the JSON decode and its GC
@@ -68,6 +72,8 @@ type EnrichedFlow struct {
 	SrcUserToken    string
 	DstMACToken     string // device/user behind DstAddr (return half of a conversation)
 	DstUserToken    string
+	SrcHostname     string // hostname the peer resolved for SrcAddr (DNS what-side)
+	DstHostname     string // hostname the client resolved for DstAddr
 	IsThreatSrc     bool
 	IsThreatDst     bool
 	ThreatLabel     string
@@ -76,7 +82,7 @@ type EnrichedFlow struct {
 	ExpandedPackets uint64
 }
 
-func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore, identity *IdentityStore) EnrichedFlow {
+func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *ThreatStore, identity *IdentityStore, dns *DNSStore) EnrichedFlow {
 	e := EnrichedFlow{FlowMessage: flow}
 
 	// Parse once and share across enrichers — ParseIP allocates, so skip it
@@ -110,6 +116,21 @@ func enrich(flow FlowMessage, geo *GeoStore, tenant *TenantStore, threat *Threat
 			identityTagHits.Inc()
 		} else {
 			identityTagMisses.Inc()
+		}
+	}
+
+	// DNS (what-side) tagging: the client that resolved an address is the source
+	// on the outbound half and the destination on the return half — same
+	// both-directions pattern as identity/dst-tenant. src=client resolving dst
+	// gives dst_hostname; the reverse orientation gives src_hostname. Two cheap
+	// RWMutex map reads, no I/O; a miss leaves the field empty (fail open).
+	if dns != nil {
+		e.DstHostname = dns.Lookup(flow.SrcAddr, flow.DstAddr)
+		e.SrcHostname = dns.Lookup(flow.DstAddr, flow.SrcAddr)
+		if e.SrcHostname != "" || e.DstHostname != "" {
+			dnsTagHits.Inc()
+		} else {
+			dnsTagMisses.Inc()
 		}
 	}
 
@@ -258,11 +279,23 @@ func main() {
 		if terr != nil {
 			slog.Error("identity token key load failed, continuing without identity (fail closed)", "err", terr)
 		} else {
+			// Resolve the log timezones before wiring the store. An invalid zone is
+			// fatal: a silent UTC fallback would mis-join local-time forensic logs.
+			npsLoc, nerr := logLocation("NPS_LOG_TZ")
+			if nerr != nil {
+				slog.Error("identity: invalid NPS log timezone", "err", nerr)
+				os.Exit(1)
+			}
+			dhcpLoc, derr := logLocation("DHCP_LOG_TZ")
+			if derr != nil {
+				slog.Error("identity: invalid DHCP log timezone", "err", derr)
+				os.Exit(1)
+			}
 			var conn driver.Conn
 			if writer != nil {
 				conn = writer.conn
 			}
-			identity = NewIdentityStore(tok, npsDir, dhcpDir,
+			identity = NewIdentityStore(tok, npsDir, dhcpDir, npsLoc, dhcpLoc,
 				durEnv("IDENTITY_MAX_LEASE", 24*time.Hour),
 				durEnv("IDENTITY_MAX_SESSION", 24*time.Hour),
 				conn)
@@ -271,6 +304,28 @@ func main() {
 		}
 	} else {
 		slog.Info("identity enrichment disabled", "reason", "IDENTITY_TOKEN_KEY_FILE + a log dir not set")
+	}
+
+	// DNS (what-side) enrichment — optional, env-gated on DNS_LOG_DIR. Hostnames
+	// are not personal data here, so there is no token key: the dir alone turns it
+	// on. Fail open — a lookup miss leaves the flow untagged.
+	var dns *DNSStore
+	if dnsDir := os.Getenv("DNS_LOG_DIR"); dnsDir != "" {
+		// Resolve the DNS log timezone; an invalid zone is fatal (see identity above).
+		dnsLoc, lerr := logLocation("DNS_LOG_TZ")
+		if lerr != nil {
+			slog.Error("dns: invalid DNS log timezone", "err", lerr)
+			os.Exit(1)
+		}
+		var conn driver.Conn
+		if writer != nil {
+			conn = writer.conn
+		}
+		dns = NewDNSStore(dnsDir, dnsLoc, conn)
+		dns.StartPoller(ctx)
+		slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "clickhouse", conn != nil)
+	} else {
+		slog.Info("dns enrichment disabled", "reason", "DNS_LOG_DIR not set")
 	}
 
 	dedup := NewDedupStore(
@@ -324,7 +379,7 @@ func main() {
 					continue
 				}
 
-				e := enrich(flow, geo, tenant, threat, identity)
+				e := enrich(flow, geo, tenant, threat, identity, dns)
 				if e.IsThreatSrc {
 					threatHits.WithLabelValues("src").Inc()
 				}
@@ -414,6 +469,11 @@ func main() {
 		// still buffered — drain them to the forensic event tables before exit.
 		if lost := identity.FinalFlush(5); lost > 0 {
 			slog.Error("shutdown: clickhouse unreachable, identity events lost", "events", lost)
+		}
+	}
+	if dns != nil {
+		if lost := dns.FinalFlush(5); lost > 0 {
+			slog.Error("shutdown: clickhouse unreachable, dns events lost", "events", lost)
 		}
 	}
 	slog.Info("shutting down")

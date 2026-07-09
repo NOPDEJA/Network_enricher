@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestTokenizer writes a key file and returns a Tokenizer over it.
@@ -161,12 +162,12 @@ func TestNoRawIdentifierLeaksThroughParsers(t *testing.T) {
 		`<Calling-Station-Id data_type="1">AA-BB-CC-DD-EE-FF</Calling-Station-Id>` +
 		`<Acct-Status-Type data_type="0">1</Acct-Status-Type>` +
 		`<Acct-Session-Id data_type="1">SESSION-A</Acct-Session-Id></Event>`
-	re, ok, err := parseNPSLine(npsLine, tok)
+	re, ok, err := parseNPSLine(npsLine, tok, time.UTC)
 	if err != nil || !ok {
 		t.Fatalf("parseNPSLine ok=%v err=%v", ok, err)
 	}
 	dhcpLine := "10,07/08/26,09:16:00,Assign,10.10.20.30,laptop-01.muic.local,AABBCCDDEEFF,,1,6,0,,"
-	de, ok, err := parseDHCPLine(dhcpLine, tok)
+	de, ok, err := parseDHCPLine(dhcpLine, tok, time.UTC)
 	if err != nil || !ok {
 		t.Fatalf("parseDHCPLine ok=%v err=%v", ok, err)
 	}

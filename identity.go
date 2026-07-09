@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -28,10 +23,12 @@ import (
 // pseudonym.go); raw identifiers are turned into tokens in the parsers and
 // never enter this store.
 //
-// Timezone note: log timestamps are parsed as UTC (see npslog.go / dhcplog.go).
-// Real Windows NPS/DHCP servers write local time; a production deployment whose
-// servers aren't on UTC should have the parse location set to the server's
-// zone. For this scaffold, treating them as UTC keeps parsing deterministic.
+// Timezone note: log timestamps carry no zone, so each parser interprets them
+// in a configured *time.Location (npsLoc / dhcpLoc), resolved at startup from
+// the LOG_TZ knob (global, with per-source NPS_LOG_TZ / DHCP_LOG_TZ overrides;
+// see logtz.go). Real Windows NPS/DHCP servers write local time — set LOG_TZ to
+// the server's zone (e.g. Asia/Bangkok) so timestamps join correctly against
+// the flows; the default is UTC. An invalid zone fails loud at startup.
 type IdentityStore struct {
 	mu       sync.RWMutex
 	ipState  map[string]ipBinding  // ip -> device holding the lease
@@ -43,6 +40,8 @@ type IdentityStore struct {
 	tok     *Tokenizer
 	npsDir  string
 	dhcpDir string
+	npsLoc  *time.Location // zone the NPS log's naive timestamps are in
+	dhcpLoc *time.Location // zone the DHCP log's naive timestamps are in
 
 	// offsets tracks per-file read position across scans. Only the single poller
 	// goroutine touches it, so it needs no lock.
@@ -70,7 +69,13 @@ type macBinding struct {
 // NewIdentityStore builds the store. conn may be nil (ClickHouse unavailable),
 // in which case events are still applied to the in-memory view for live tagging
 // but not persisted.
-func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+	if npsLoc == nil {
+		npsLoc = time.UTC
+	}
+	if dhcpLoc == nil {
+		dhcpLoc = time.UTC
+	}
 	s := &IdentityStore{
 		ipState:    make(map[string]ipBinding),
 		macState:   make(map[string]macBinding),
@@ -79,6 +84,8 @@ func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, maxLease, maxSessi
 		tok:        tok,
 		npsDir:     npsDir,
 		dhcpDir:    dhcpDir,
+		npsLoc:     npsLoc,
+		dhcpLoc:    dhcpLoc,
 		offsets:    make(map[string]int64),
 		now:        time.Now,
 	}
@@ -263,86 +270,22 @@ func (s *IdentityStore) scan() {
 const (
 	sourceNPS  = "nps"
 	sourceDHCP = "dhcp"
-
-	// maxScanReadBytes caps how much of one file's unread tail a single scan
-	// pulls into memory, so a cold start over a large backlog can't OOM.
-	maxScanReadBytes = 8 << 20 // 8 MB
 )
 
+// scanDir tails one identity log directory using the shared incremental-scan
+// core (see filepoller.go), routing each line to the matching parser.
 func (s *IdentityStore) scanDir(dir, source string) {
-	if dir == "" {
-		return
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		slog.Error("identity: cannot read log dir", "source", source, "dir", dir, "err", err)
-		return
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		s.readAppended(filepath.Join(dir, entry.Name()), source)
-	}
-}
-
-// readAppended reads the bytes added to one file since the last scan and parses
-// only complete lines (a trailing partial line is left for the next scan). A
-// file smaller than its stored offset was rotated/truncated, so it is re-read
-// from 0.
-func (s *IdentityStore) readAppended(path, source string) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	size := fi.Size()
-	off := s.offsets[path]
-	if size < off {
-		off = 0 // rotation or truncation: start over
-	}
-	if size == off {
-		return
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		slog.Error("identity: cannot open log file", "source", source, "path", path, "err", err)
-		return
-	}
-	defer f.Close()
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return
-	}
-	// Bound the read: a cold start over months of accumulated logs would otherwise
-	// pull the whole backlog into memory at once. Cap it, advance only past the
-	// last complete line, and let the next scan continue from there.
-	data, err := io.ReadAll(io.LimitReader(f, maxScanReadBytes))
-	if err != nil {
-		return
-	}
-
-	// Only advance past the last newline; hold back any partial final line.
-	nl := bytes.LastIndexByte(data, '\n')
-	if nl < 0 {
-		return
-	}
-	s.offsets[path] = off + int64(nl+1)
-
-	for _, raw := range bytes.Split(data[:nl+1], []byte{'\n'}) {
-		line := strings.TrimRight(string(raw), "\r")
-		if line == "" {
-			continue
-		}
+	scanAppendedDir(dir, source, s.offsets, func(line string) {
 		if source == sourceNPS {
 			s.ingestNPS(line)
 		} else {
 			s.ingestDHCP(line)
 		}
-	}
+	})
 }
 
 func (s *IdentityStore) ingestNPS(line string) {
-	ev, ok, err := parseNPSLine(line, s.tok)
+	ev, ok, err := parseNPSLine(line, s.tok, s.npsLoc)
 	if err != nil {
 		identityParseErrors.WithLabelValues(sourceNPS).Inc()
 		return
@@ -358,7 +301,7 @@ func (s *IdentityStore) ingestNPS(line string) {
 }
 
 func (s *IdentityStore) ingestDHCP(line string) {
-	ev, ok, err := parseDHCPLine(line, s.tok)
+	ev, ok, err := parseDHCPLine(line, s.tok, s.dhcpLoc)
 	if err != nil {
 		identityParseErrors.WithLabelValues(sourceDHCP).Inc()
 		return

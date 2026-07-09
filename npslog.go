@@ -48,7 +48,8 @@ type dtsField struct {
 
 // dtsTimeLayouts are the DTS Timestamp spellings we accept. The default NPS
 // format is MM/DD/YYYY HH:MM:SS.mmm; the millisecond-less form is tolerated.
-// Timestamps are parsed as UTC — see the note in identity.go on log timezones.
+// Timestamps are interpreted in the parser's *time.Location — see the LOG_TZ
+// note in identity.go on log timezones.
 var dtsTimeLayouts = []string{
 	"01/02/2006 15:04:05.000",
 	"01/02/2006 15:04:05",
@@ -62,7 +63,7 @@ var dtsTimeLayouts = []string{
 //	                         accounting status other than Start/Interim/Stop) —
 //	                         skip silently
 //	ok == true            -> a session event to feed into the store
-func parseNPSLine(line string, tok *Tokenizer) (RadiusEvent, bool, error) {
+func parseNPSLine(line string, tok *Tokenizer, loc *time.Location) (RadiusEvent, bool, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return RadiusEvent{}, false, nil
@@ -85,9 +86,9 @@ func parseNPSLine(line string, tok *Tokenizer) (RadiusEvent, bool, error) {
 		return RadiusEvent{}, false, nil
 	}
 
-	ts, ok := parseDTSTime(fields["Timestamp"])
+	ts, ok := parseDTSTime(fields["Timestamp"], loc)
 	if !ok {
-		ts, ok = parseDTSTime(fields["Event-Timestamp"])
+		ts, ok = parseDTSTime(fields["Event-Timestamp"], loc)
 	}
 	if !ok {
 		return RadiusEvent{}, false, errInvalidTimestamp
@@ -120,13 +121,13 @@ func acctStatusName(v string) string {
 	}
 }
 
-func parseDTSTime(v string) (time.Time, bool) {
+func parseDTSTime(v string, loc *time.Location) (time.Time, bool) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return time.Time{}, false
 	}
 	for _, layout := range dtsTimeLayouts {
-		if t, err := time.Parse(layout, v); err == nil {
+		if t, err := time.ParseInLocation(layout, v, loc); err == nil {
 			return t, true
 		}
 	}

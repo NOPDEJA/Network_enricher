@@ -29,7 +29,7 @@ func TestParseNPSFixture(t *testing.T) {
 	var got []RadiusEvent
 	var errs, skips int
 	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
-		ev, ok, err := parseNPSLine(line, tok)
+		ev, ok, err := parseNPSLine(line, tok, time.UTC)
 		switch {
 		case err != nil:
 			errs++
@@ -115,7 +115,7 @@ func TestParseNPSLineEdgeCases(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, ok, err := parseNPSLine(tc.line, tok)
+			_, ok, err := parseNPSLine(tc.line, tok, time.UTC)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}

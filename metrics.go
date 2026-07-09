@@ -75,6 +75,34 @@ var (
 		Name: "enricher_identity_scan_panics_total",
 		Help: "Identity poller scans that panicked and were recovered.",
 	})
+	dnsEventsParsed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_events_parsed_total",
+		Help: "DNS log events parsed and applied.",
+	})
+	dnsParseErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_parse_errors_total",
+		Help: "Malformed DNS log lines skipped.",
+	})
+	dnsTagHits = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_tag_hits_total",
+		Help: "Flows where DNS lookup resolved at least one hostname.",
+	})
+	dnsTagMisses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_tag_misses_total",
+		Help: "Flows where DNS lookup resolved no hostname for either address.",
+	})
+	dnsEvictions = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_evictions_total",
+		Help: "DNS store entries evicted under the hard size cap (expired-first, then oldest).",
+	})
+	dnsEventWriteErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_event_write_errors_total",
+		Help: "ClickHouse write attempts for DNS events that failed; the batch is retried next scan.",
+	})
+	dnsScanPanics = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "enricher_dns_scan_panics_total",
+		Help: "DNS poller scans that panicked and were recovered.",
+	})
 )
 
 func registerMetrics() {
@@ -95,6 +123,13 @@ func registerMetrics() {
 		identityTagMisses,
 		identityEventWriteErrors,
 		identityScanPanics,
+		dnsEventsParsed,
+		dnsParseErrors,
+		dnsTagHits,
+		dnsTagMisses,
+		dnsEvictions,
+		dnsEventWriteErrors,
+		dnsScanPanics,
 	)
 }
 

@@ -23,6 +23,8 @@ type FlowRow struct {
 	SrcUserToken    string
 	DstMACToken     string
 	DstUserToken    string
+	SrcHostname     string
+	DstHostname     string
 	SrcIP           string
 	DstIP           string
 	SrcPort         uint32
@@ -81,6 +83,8 @@ func toFlowRow(e EnrichedFlow) FlowRow {
 		SrcUserToken:    e.SrcUserToken,
 		DstMACToken:     e.DstMACToken,
 		DstUserToken:    e.DstUserToken,
+		SrcHostname:     e.SrcHostname,
+		DstHostname:     e.DstHostname,
 		SrcIP:           e.SrcAddr,
 		DstIP:           e.DstAddr,
 		SrcPort:         e.SrcPort,
@@ -175,6 +179,8 @@ func applySchema(conn driver.Conn) error {
 			src_user_token   String,
 			dst_mac_token    String,
 			dst_user_token   String,
+			src_hostname     String,
+			dst_hostname     String,
 			src_ip           String,
 			dst_ip           String,
 			src_port         UInt32,
@@ -222,6 +228,12 @@ func applySchema(conn driver.Conn) error {
 			ADD COLUMN IF NOT EXISTS dst_mac_token String AFTER src_user_token,
 			ADD COLUMN IF NOT EXISTS dst_user_token String AFTER dst_mac_token`,
 
+		// Migration for tables created before DNS (what-side) tagging. Additive and
+		// safe on old tables: empty for untagged flows.
+		`ALTER TABLE flows
+			ADD COLUMN IF NOT EXISTS src_hostname String AFTER dst_user_token,
+			ADD COLUMN IF NOT EXISTS dst_hostname String AFTER src_hostname`,
+
 		// Identity event tables: append-only forensic source of truth for the
 		// DHCP+RADIUS join. Volume is tiny (thousands/day). MAC and username are
 		// stored only as pseudonymous tokens.
@@ -251,6 +263,23 @@ func applySchema(conn driver.Conn) error {
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
 		ORDER BY (mac_token, event_time, session_id, acct_status)
+		TTL event_time + INTERVAL 90 DAY DELETE`,
+
+		// DNS event table: append-only forensic record of hostnames clients
+		// resolved. Hostnames stay in the CLEAR (not personal data here). Same
+		// ReplacingMergeTree + fully-identifying ORDER BY as the identity tables so
+		// restart-replay dedups on merge.
+		`CREATE TABLE IF NOT EXISTS dns_events (
+			event_time  DateTime,
+			client_ip   String,
+			client_port UInt16,
+			qname       String,
+			qtype       LowCardinality(String),
+			answer_ip   String,
+			ttl         UInt32
+		) ENGINE = ReplacingMergeTree()
+		PARTITION BY toYYYYMMDD(event_time)
+		ORDER BY (client_ip, qname, answer_ip, event_time, qtype, client_port, ttl)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (
@@ -407,6 +436,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO flows (
 		timestamp, tenant_id, tenant_name, dst_tenant_id, dst_tenant_name,
 		src_mac_token, src_user_token, dst_mac_token, dst_user_token,
+		src_hostname, dst_hostname,
 		src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets,
 		src_country, src_city, src_lat, src_lon, src_asn, src_org,
 		dst_country, dst_city, dst_lat, dst_lon, dst_asn, dst_org,
@@ -423,6 +453,7 @@ func (w *BatchWriter) sendToClickHouse(rows []FlowRow) ([]FlowRow, error) {
 		if err := batch.Append(
 			r.Timestamp, r.TenantID, r.TenantName, r.DstTenantID, r.DstTenantName,
 			r.SrcMACToken, r.SrcUserToken, r.DstMACToken, r.DstUserToken,
+			r.SrcHostname, r.DstHostname,
 			r.SrcIP, r.DstIP, r.SrcPort, r.DstPort, r.Protocol,
 			r.Bytes, r.Packets,
 			r.SrcCountry, r.SrcCity, r.SrcLat, r.SrcLon, r.SrcASN, r.SrcOrg,
