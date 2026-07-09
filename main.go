@@ -72,6 +72,8 @@ type EnrichedFlow struct {
 	SrcUserToken    string
 	DstMACToken     string // device/user behind DstAddr (return half of a conversation)
 	DstUserToken    string
+	SrcHostname     string // hostname the peer resolved for SrcAddr (DNS what-side)
+	DstHostname     string // hostname the client resolved for DstAddr
 	IsThreatSrc     bool
 	IsThreatDst     bool
 	ThreatLabel     string

@@ -27,6 +27,13 @@ CREATE TABLE IF NOT EXISTS flows (
     src_user_token   String,
     dst_mac_token    String,
     dst_user_token   String,
+
+    -- DNS (what-side) hostnames. Plain String, NOT LowCardinality: hostname
+    -- cardinality is high. In the CLEAR (not personal data in this design).
+    -- src_hostname is what the destination resolved for the source address;
+    -- dst_hostname is what the source resolved for the destination.
+    src_hostname     String,
+    dst_hostname     String,
     src_ip           String,
     dst_ip           String,
     src_port         UInt32,
@@ -82,6 +89,11 @@ ALTER TABLE flows
     ADD COLUMN IF NOT EXISTS dst_mac_token String AFTER src_user_token,
     ADD COLUMN IF NOT EXISTS dst_user_token String AFTER dst_mac_token;
 
+-- Migration for tables created before DNS (what-side) tagging.
+ALTER TABLE flows
+    ADD COLUMN IF NOT EXISTS src_hostname String AFTER dst_user_token,
+    ADD COLUMN IF NOT EXISTS dst_hostname String AFTER src_hostname;
+
 
 -- ============================================================
 -- Identity event tables (campus-WiFi forensics)
@@ -118,6 +130,32 @@ CREATE TABLE IF NOT EXISTS identity_radius_events (
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (mac_token, event_time, session_id, acct_status)
+TTL event_time + INTERVAL 90 DAY DELETE;
+
+
+-- ============================================================
+-- DNS event table (campus-WiFi forensics, "what" side)
+-- Append-only source of truth for hostnames clients resolved,
+-- joined to flows per client IP + answered IP. Hostnames are NOT
+-- personal data in this design and stay in the CLEAR (no tokens).
+--
+-- Same ReplacingMergeTree + fully-identifying ORDER BY as the
+-- identity event tables: in-memory offsets mean a restart re-reads
+-- from byte 0 and re-inserts, so identical rows collapse on merge.
+-- Dedup is eventual (merge-time) — use FINAL or GROUP BY for exact
+-- forensic queries.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS dns_events (
+    event_time DateTime,
+    client_ip  String,
+    qname      String,
+    qtype      LowCardinality(String), -- A / AAAA
+    answer_ip  String,                 -- empty for a query-only line
+    ttl        UInt32
+)
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMMDD(event_time)
+ORDER BY (client_ip, qname, answer_ip, event_time, qtype)
 TTL event_time + INTERVAL 90 DAY DELETE;
 
 
