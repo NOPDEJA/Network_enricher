@@ -39,20 +39,20 @@ func TestParseDNSFixture(t *testing.T) {
 	}
 
 	want := []DnsEvent{
-		{QName: "www.example.com", QType: "A", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.5"},
-		{QName: "www.example.com", QType: "A", AnswerIP: "93.184.216.34", TTL: 300, ClientIP: "10.0.0.5"},
-		{QName: "www.example.com", QType: "A", AnswerIP: "93.184.216.35", TTL: 300, ClientIP: "10.0.0.5"},
-		{QName: "ipv6.example.org", QType: "AAAA", AnswerIP: "2606:2800:220:1:248:1893:25c8:1946", TTL: 120, ClientIP: "10.0.0.8"},
-		{QName: "nope.invalid", QType: "", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.9"},
-		{QName: "mixedcase.example.com", QType: "A", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.5"},
+		{QName: "www.example.com", QType: "A", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.5", ClientPort: 54321},
+		{QName: "www.example.com", QType: "A", AnswerIP: "93.184.216.34", TTL: 300, ClientIP: "10.0.0.5", ClientPort: 54321},
+		{QName: "www.example.com", QType: "A", AnswerIP: "93.184.216.35", TTL: 300, ClientIP: "10.0.0.5", ClientPort: 54321},
+		{QName: "ipv6.example.org", QType: "AAAA", AnswerIP: "2606:2800:220:1:248:1893:25c8:1946", TTL: 120, ClientIP: "10.0.0.8", ClientPort: 40000},
+		{QName: "nope.invalid", QType: "A", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.9", ClientPort: 33333},
+		{QName: "mixedcase.example.com", QType: "A", AnswerIP: "", TTL: 0, ClientIP: "10.0.0.5", ClientPort: 54321},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parsed %d events, want %d: %+v", len(got), len(want), got)
 	}
 	for i, w := range want {
 		g := got[i]
-		if g.ClientIP != w.ClientIP || g.QName != w.QName || g.QType != w.QType ||
-			g.AnswerIP != w.AnswerIP || g.TTL != w.TTL {
+		if g.ClientIP != w.ClientIP || g.ClientPort != w.ClientPort || g.QName != w.QName ||
+			g.QType != w.QType || g.AnswerIP != w.AnswerIP || g.TTL != w.TTL {
 			t.Errorf("event %d = %+v, want %+v", i, g, w)
 		}
 	}
@@ -76,6 +76,9 @@ func TestParseDNSLineEdgeCases(t *testing.T) {
 		{"response with one A parses to one event", "08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (h.example.com): response: h.example.com IN A NOERROR h.example.com. 300 IN A 1.2.3.4", 1, false},
 		{"response marker without a client prefix is an error", "08-Jul-2026 09:15:00.456 garbled line: response: something here", 0, true},
 		{"response-like fragment without the full marker is skipped", "08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (h): response:", 0, false},
+		{"A answer with non-IP rdata falls back to the no-answer event", "08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (h): response: h IN A NOERROR h. 300 IN A not-an-ip", 1, false},
+		{"A answer with a v6 literal is skipped (family mismatch)", "08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (h): response: h IN A NOERROR h. 300 IN A 2606::1", 1, false},
+		{"AAAA answer with a v4 literal is skipped (family mismatch)", "08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (h): response: h IN AAAA NOERROR h. 300 IN AAAA 1.2.3.4", 1, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,6 +90,31 @@ func TestParseDNSLineEdgeCases(t *testing.T) {
 				t.Errorf("events = %d, want %d", len(evs), tc.wantCount)
 			}
 		})
+	}
+}
+
+// A no-answer response keeps its queried type and client port, so an A and an
+// AAAA NXDOMAIN for the same name at the same millisecond stay distinguishable
+// (they must not collapse to one row under the event table's ReplacingMergeTree).
+func TestParseDNSNoAnswerKeepsDiscriminators(t *testing.T) {
+	a, err := parseDNSLine("08-Jul-2026 09:17:00.500 client 10.0.0.9#33333 (nope.invalid): response: nope.invalid IN A NXDOMAIN", time.UTC)
+	if err != nil || len(a) != 1 {
+		t.Fatalf("A: len=%d err=%v", len(a), err)
+	}
+	aaaa, err := parseDNSLine("08-Jul-2026 09:17:00.500 client 10.0.0.9#33334 (nope.invalid): response: nope.invalid IN AAAA NXDOMAIN", time.UTC)
+	if err != nil || len(aaaa) != 1 {
+		t.Fatalf("AAAA: len=%d err=%v", len(aaaa), err)
+	}
+	if a[0].QType != "A" || aaaa[0].QType != "AAAA" {
+		t.Errorf("qtypes = %q / %q, want A / AAAA", a[0].QType, aaaa[0].QType)
+	}
+	if a[0].ClientPort != 33333 || aaaa[0].ClientPort != 33334 {
+		t.Errorf("ports = %d / %d, want 33333 / 33334", a[0].ClientPort, aaaa[0].ClientPort)
+	}
+	// The two events differ on at least one ORDER BY discriminator (qtype/port),
+	// so they occupy distinct rows despite the identical event_time and qname.
+	if a[0].QType == aaaa[0].QType && a[0].ClientPort == aaaa[0].ClientPort {
+		t.Error("same-millisecond A and AAAA NXDOMAIN would collapse")
 	}
 }
 

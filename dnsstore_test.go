@@ -152,6 +152,24 @@ func TestDNSNewestWins(t *testing.T) {
 	}
 }
 
+// Deterministic tie-break: two events for the same (client, answer) pair with
+// equal EventTime but different hostnames must resolve to the same final state
+// regardless of arrival order (the lexicographically greater hostname wins).
+func TestDNSEqualTimeTieBreak(t *testing.T) {
+	apple := DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.5", QName: "apple.example.com", QType: "A", AnswerIP: "1.1.1.1", TTL: 300}
+	zebra := DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.5", QName: "zebra.example.com", QType: "A", AnswerIP: "1.1.1.1", TTL: 300}
+
+	for _, order := range [][2]DnsEvent{{apple, zebra}, {zebra, apple}} {
+		s, clk := newClockedDNSStore(t)
+		s.applyDNS(order[0])
+		s.applyDNS(order[1])
+		*clk = dnsBase.Add(time.Minute)
+		if h := s.Lookup("10.0.0.5", "1.1.1.1"); h != "zebra.example.com" {
+			t.Errorf("order %q,%q -> %q, want zebra.example.com (greater hostname wins)", order[0].QName, order[1].QName, h)
+		}
+	}
+}
+
 // Ingest routes parsed events into the live map and skips malformed lines with
 // the parse-error metric, without panicking.
 func TestDNSIngest(t *testing.T) {

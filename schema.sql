@@ -146,16 +146,21 @@ TTL event_time + INTERVAL 90 DAY DELETE;
 -- forensic queries.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS dns_events (
-    event_time DateTime,
-    client_ip  String,
-    qname      String,
-    qtype      LowCardinality(String), -- A / AAAA
-    answer_ip  String,                 -- empty for a query-only line
-    ttl        UInt32
+    event_time  DateTime,
+    client_ip   String,
+    client_port UInt16,                 -- per-line discriminator (see ORDER BY)
+    qname       String,
+    qtype       LowCardinality(String), -- A / AAAA
+    answer_ip   String,                 -- empty for a query-only line
+    ttl         UInt32
 )
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
-ORDER BY (client_ip, qname, answer_ip, event_time, qtype)
+-- Fully-identifying ORDER BY: client_port + ttl discriminate two distinct UDP
+-- transactions that land in the same millisecond, while a replayed identical
+-- line (same port, same ttl) still collapses to one row — keeping restart-replay
+-- idempotent.
+ORDER BY (client_ip, qname, answer_ip, event_time, qtype, client_port, ttl)
 TTL event_time + INTERVAL 90 DAY DELETE;
 
 

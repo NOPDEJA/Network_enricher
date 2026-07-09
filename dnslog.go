@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,12 +20,13 @@ import (
 // empty; it can't tag a live flow but is still forensically useful in the event
 // table.
 type DnsEvent struct {
-	EventTime time.Time
-	ClientIP  string
-	QName     string // normalized: lowercase, trailing dot stripped
-	QType     string // "A" or "AAAA" (the record types we tag on)
-	AnswerIP  string // "" for a query-only line
-	TTL       uint32 // 0 for a query-only line
+	EventTime  time.Time
+	ClientIP   string
+	ClientPort uint16 // client source port — the per-line discriminator for the event table
+	QName      string // normalized: lowercase, trailing dot stripped
+	QType      string // "A" or "AAAA" (the record types we tag on)
+	AnswerIP   string // "" for a query-only line
+	TTL        uint32 // 0 for a query-only line
 }
 
 var errMalformedDNS = errors.New("malformed BIND log line")
@@ -52,11 +54,18 @@ const dnsTimeLayout = "02-Jan-2006 15:04:05.000"
 //     format pending re-validation against a real dnstap-read sample; the answer
 //     scan below is format-agnostic enough to survive minor prefix differences:
 //     08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (host): response: host IN A NOERROR host. 300 IN A 93.184.216.34
+//
+// Both prefixes capture the client source port (#\d+): it is the per-line
+// discriminator that keeps replayed identical lines deduping to one row while
+// distinct same-millisecond UDP transactions stay separate in the event table.
 var (
 	dnsQueryRe = regexp.MustCompile(
-		`client\s+(?:@\S+\s+)?(\S+?)#\d+\s+\([^)]*\):\s*query:\s+(\S+)\s+\S+\s+(\S+)`)
+		`client\s+(?:@\S+\s+)?(\S+?)#(\d+)\s+\([^)]*\):\s*query:\s+(\S+)\s+\S+\s+(\S+)`)
+	// The response prefix carries the queried type ("host IN A NOERROR ..."), so
+	// capture it too — a no-answer response must still record its QType, else an
+	// A-NXDOMAIN and AAAA-NXDOMAIN in the same millisecond would collapse.
 	dnsResponseRe = regexp.MustCompile(
-		`client\s+(?:@\S+\s+)?(\S+?)#\d+\s+\([^)]*\):\s*response:\s+(\S+)\s`)
+		`client\s+(?:@\S+\s+)?(\S+?)#(\d+)\s+\([^)]*\):\s*response:\s+(\S+)\s+\S+\s+(\S+)`)
 	// One resource record in presentation form, restricted to the address types
 	// we tag on. Applied across the whole line: the querylog/response prefix has
 	// no "<name> <ttl> IN A/AAAA <ip>" shape, so only real answer RRs match.
@@ -93,29 +102,32 @@ func parseDNSLine(line string, loc *time.Location) ([]DnsEvent, error) {
 		if m == nil {
 			return nil, errMalformedDNS
 		}
-		qname := normalizeHost(m[2])
+		qname := normalizeHost(m[3])
 		if qname == "" {
 			return nil, errMalformedDNS
 		}
 		return []DnsEvent{{
-			EventTime: ts,
-			ClientIP:  m[1],
-			QName:     qname,
-			QType:     m[3],
+			EventTime:  ts,
+			ClientIP:   m[1],
+			ClientPort: parsePort(m[2]),
+			QName:      qname,
+			QType:      m[4],
 		}}, nil
 	}
 
-	// Response line: pull the client + queried name from the prefix, then scan the
-	// answer section for A/AAAA records.
+	// Response line: pull the client, port, queried name and type from the prefix,
+	// then scan the answer section for A/AAAA records.
 	m := dnsResponseRe.FindStringSubmatch(line)
 	if m == nil {
 		return nil, errMalformedDNS
 	}
 	clientIP := m[1]
-	qname := normalizeHost(m[2])
+	clientPort := parsePort(m[2])
+	qname := normalizeHost(m[3])
 	if qname == "" {
 		return nil, errMalformedDNS
 	}
+	qtype := m[4]
 
 	var events []DnsEvent
 	for _, a := range dnsAnswerRe.FindAllStringSubmatch(line, -1) {
@@ -123,21 +135,45 @@ func parseDNSLine(line string, loc *time.Location) ([]DnsEvent, error) {
 		if cerr != nil {
 			continue
 		}
+		// Validate the rdata: an A record must carry a v4 address and an AAAA a v6
+		// one. Non-IP rdata (or a type/family mismatch) is skipped, not tagged.
+		ip := net.ParseIP(a[4])
+		if ip == nil {
+			continue
+		}
+		if a[3] == "A" && ip.To4() == nil {
+			continue // A with a non-v4 literal
+		}
+		if a[3] == "AAAA" && ip.To4() != nil {
+			continue // AAAA with a v4 literal
+		}
 		events = append(events, DnsEvent{
-			EventTime: ts,
-			ClientIP:  clientIP,
-			QName:     qname,
-			QType:     a[3],
-			AnswerIP:  a[4],
-			TTL:       uint32(ttl64),
+			EventTime:  ts,
+			ClientIP:   clientIP,
+			ClientPort: clientPort,
+			QName:      qname,
+			QType:      a[3],
+			AnswerIP:   a[4],
+			TTL:        uint32(ttl64),
 		})
 	}
 	if len(events) == 0 {
-		// A response with no A/AAAA answer (NXDOMAIN, CNAME-only, MX/TXT, …): still
-		// record that the client resolved this name, with no address to tag on.
-		events = append(events, DnsEvent{EventTime: ts, ClientIP: clientIP, QName: qname})
+		// A response with no valid A/AAAA answer (NXDOMAIN, CNAME-only, MX/TXT, or
+		// only malformed rdata): still record that the client resolved this name,
+		// keeping the queried type so distinct same-millisecond types don't collapse.
+		events = append(events, DnsEvent{EventTime: ts, ClientIP: clientIP, ClientPort: clientPort, QName: qname, QType: qtype})
 	}
 	return events, nil
+}
+
+// parsePort reads a client source port; an out-of-range value yields 0 (the
+// discriminator degrades but never panics).
+func parsePort(s string) uint16 {
+	p, err := strconv.ParseUint(s, 10, 16)
+	if err != nil {
+		return 0
+	}
+	return uint16(p)
 }
 
 // parseDNSTime reads BIND's leading "DD-Mon-YYYY HH:MM:SS.mmm" stamp (the first

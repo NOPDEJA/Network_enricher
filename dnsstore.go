@@ -1,9 +1,9 @@
 package main
 
 import (
+	"container/heap"
 	"context"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 
@@ -108,8 +108,18 @@ func (s *DNSStore) Lookup(clientIP, answeredIP string) string {
 
 // applyDNS folds one resolved answer into the live map. A query-only event
 // (empty AnswerIP) can't key a live tag, so it is a no-op here (it is still
-// persisted to the event table by ingestDNS). Newest-event-wins keeps a
-// replayed/out-of-order older resolution from clobbering a newer one.
+// persisted to the event table by ingestDNS).
+//
+// SINGLE-MUTATOR INVARIANT: applyDNS runs only on the poller goroutine, so no
+// other goroutine ever writes s.entries. That lets the expensive eviction
+// SELECTION run under RLock (concurrent enrich-path Lookups keep flowing) with
+// only the bounded deletion pass under the write lock — the O(n) scan never
+// stalls Lookups.
+//
+// Newest-event-wins keeps a replayed/out-of-order older resolution from
+// clobbering a newer one; ties (equal EventTime, different hostname) break
+// deterministically on the greater hostname so scan order can't decide the
+// final state (replay-order-independent).
 func (s *DNSStore) applyDNS(e DnsEvent) {
 	if e.AnswerIP == "" || e.QName == "" {
 		return
@@ -123,13 +133,33 @@ func (s *DNSStore) applyDNS(e DnsEvent) {
 	}
 	k := dnsKey{e.ClientIP, e.AnswerIP}
 
+	// Only a brand-new key grows the map, so only then must we make room. Select
+	// victims without the write lock, then delete them under it (bounded hold).
+	s.mu.RLock()
+	_, exists := s.entries[k]
+	atCap := !exists && len(s.entries) >= s.maxSize
+	s.mu.RUnlock()
+	if atCap {
+		if victims := s.selectEvictions(); len(victims) > 0 {
+			s.mu.Lock()
+			for _, vk := range victims {
+				// Sole mutator: no re-check needed, each victim is still present.
+				delete(s.entries, vk)
+				dnsEvictions.Inc()
+			}
+			s.mu.Unlock()
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if b, ok := s.entries[k]; ok && e.EventTime.Before(b.eventTime) {
-		return // older than current binding: don't overwrite newer state
-	}
-	if _, exists := s.entries[k]; !exists {
-		s.evictToCapLocked()
+	if b, ok := s.entries[k]; ok {
+		if e.EventTime.Before(b.eventTime) {
+			return // older than current binding: don't overwrite newer state
+		}
+		if e.EventTime.Equal(b.eventTime) && e.QName <= b.hostname {
+			return // tie: keep unless the new hostname sorts strictly greater
+		}
 	}
 	s.entries[k] = dnsBinding{
 		hostname:  e.QName,
@@ -138,47 +168,65 @@ func (s *DNSStore) applyDNS(e DnsEvent) {
 	}
 }
 
-// evictToCapLocked enforces the hard size cap before an insert that would grow
-// the map. It drops expired entries first; if still at the cap it drops the
-// oldest chunk (by deadline) in one pass so this O(n) sweep amortizes over many
-// inserts rather than running per insert. Caller holds the write lock.
-func (s *DNSStore) evictToCapLocked() {
-	if len(s.entries) < s.maxSize {
-		return
-	}
+// selectEvictions picks the keys to shed when a new insert would exceed the cap:
+// all expired entries first, then, if that frees fewer than `shed` slots, the
+// oldest (earliest-deadline) non-expired entries to make up the difference. The
+// oldest are chosen with a bounded max-heap of size `shed` — a partial selection
+// over one O(n) pass, never a full sort. Runs under RLock only (see the
+// single-mutator invariant on applyDNS), so Lookups aren't blocked.
+func (s *DNSStore) selectEvictions() []dnsKey {
 	now := s.now()
-	for k, b := range s.entries {
-		if now.After(b.deadline) {
-			delete(s.entries, k)
-			dnsEvictions.Inc()
-		}
-	}
-	if len(s.entries) < s.maxSize {
-		return
-	}
-	// Still full: shed the oldest ~1/16 of capacity in one sorted pass, leaving
-	// headroom so the next inserts don't each re-trigger this. At least one is
-	// dropped so a tiny cap still makes room.
 	shed := s.maxSize / 16
 	if shed < 1 {
 		shed = 1
 	}
-	target := s.maxSize - shed
-	aged := make([]struct {
-		k dnsKey
-		d time.Time
-	}, 0, len(s.entries))
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var expired []dnsKey
+	oldest := &victimHeap{} // max-heap: root is the latest deadline among the kept oldest
 	for k, b := range s.entries {
-		aged = append(aged, struct {
-			k dnsKey
-			d time.Time
-		}{k, b.deadline})
+		if now.After(b.deadline) {
+			expired = append(expired, k)
+			continue
+		}
+		if oldest.Len() < shed {
+			heap.Push(oldest, victim{key: k, deadline: b.deadline})
+		} else if b.deadline.Before((*oldest)[0].deadline) {
+			(*oldest)[0] = victim{key: k, deadline: b.deadline}
+			heap.Fix(oldest, 0)
+		}
 	}
-	sort.Slice(aged, func(i, j int) bool { return aged[i].d.Before(aged[j].d) })
-	for i := 0; i < len(aged) && len(s.entries) > target; i++ {
-		delete(s.entries, aged[i].k)
-		dnsEvictions.Inc()
+
+	// Expired alone may already free enough; otherwise top up with the oldest.
+	victims := expired
+	need := shed - len(expired)
+	for i := 0; i < oldest.Len() && need > 0; i++ {
+		victims = append(victims, (*oldest)[i].key)
+		need--
 	}
+	return victims
+}
+
+// victim/victimHeap back the bounded oldest-selection in selectEvictions.
+type victim struct {
+	key      dnsKey
+	deadline time.Time
+}
+
+type victimHeap []victim
+
+func (h victimHeap) Len() int           { return len(h) }
+func (h victimHeap) Less(i, j int) bool { return h[i].deadline.After(h[j].deadline) } // max at root
+func (h victimHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *victimHeap) Push(x any)        { *h = append(*h, x.(victim)) }
+func (h *victimHeap) Pop() any {
+	old := *h
+	n := len(old)
+	v := old[n-1]
+	*h = old[:n-1]
+	return v
 }
 
 // evictExpired drops entries past their deadline. Normal housekeeping run at the
@@ -287,12 +335,12 @@ func (w *chDNSWriter) sendDNS(rows []DnsEvent) error {
 	ctx, cancel := context.WithTimeout(context.Background(), eventWriteTimeout)
 	defer cancel()
 	batch, err := w.conn.PrepareBatch(ctx,
-		`INSERT INTO dns_events (event_time, client_ip, qname, qtype, answer_ip, ttl)`)
+		`INSERT INTO dns_events (event_time, client_ip, client_port, qname, qtype, answer_ip, ttl)`)
 	if err != nil {
 		return err
 	}
 	for _, r := range rows {
-		if err := batch.Append(r.EventTime, r.ClientIP, r.QName, r.QType, r.AnswerIP, r.TTL); err != nil {
+		if err := batch.Append(r.EventTime, r.ClientIP, r.ClientPort, r.QName, r.QType, r.AnswerIP, r.TTL); err != nil {
 			return err
 		}
 	}

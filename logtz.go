@@ -21,6 +21,12 @@ import (
 //
 // IANA lookups require the zone database; main imports _ "time/tzdata" so this
 // works on Windows dev boxes as well as the Ubuntu deploy host.
+//
+// Caveat: interpreting a naive (zone-less) local timestamp via ParseInLocation
+// is inherently ambiguous across a DST fall-back fold — the same wall-clock hour
+// occurs twice, and Go resolves it to one of the two instants. Asia/Bangkok has
+// no DST so this never bites MUIC, but a deployment in a DST zone should expect
+// up to a one-hour skew for timestamps inside the fold.
 func logLocation(sourceEnv string) (*time.Location, error) {
 	name := os.Getenv(sourceEnv)
 	if name == "" {

@@ -270,15 +270,16 @@ func applySchema(conn driver.Conn) error {
 		// ReplacingMergeTree + fully-identifying ORDER BY as the identity tables so
 		// restart-replay dedups on merge.
 		`CREATE TABLE IF NOT EXISTS dns_events (
-			event_time DateTime,
-			client_ip  String,
-			qname      String,
-			qtype      LowCardinality(String),
-			answer_ip  String,
-			ttl        UInt32
+			event_time  DateTime,
+			client_ip   String,
+			client_port UInt16,
+			qname       String,
+			qtype       LowCardinality(String),
+			answer_ip   String,
+			ttl         UInt32
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
-		ORDER BY (client_ip, qname, answer_ip, event_time, qtype)
+		ORDER BY (client_ip, qname, answer_ip, event_time, qtype, client_port, ttl)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (
