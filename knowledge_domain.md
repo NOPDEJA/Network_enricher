@@ -11,7 +11,7 @@ The system processes network telemetry data, not raw packets. It is essential to
   - **NetFlow v5 / v9 & IPFIX:** Typically unsampled or systematically sampled.
   - **sFlow:** Inherently packet-sampled (e.g., 1 in 1000 packets).
 - **Sampling Expansion:** To estimate true traffic volume, the enricher must multiply `bytes` and `packets` by the `sampling_rate` (found in the goflow2 template). A rate of 1 or 0 means unsampled.
-- **Fail Open Strategy:** Packet/flow loss is considered much worse than enrichment failure. If a lookup (e.g., GeoIP or Threat Intel) fails, the flow must be passed downstream un-enriched. **Never drop a flow** unless the upstream buffer is OOM-risking.
+- **Fail Open Strategy:** Packet/flow loss is considered much worse than enrichment failure. If a lookup (e.g., GeoIP or Threat Intel) fails, the flow must be passed downstream un-enriched. **Never drop a flow** unless the upstream buffer is OOM-risking. There are exactly two deliberate inversions of this rule, both in the forensic subsystems (section 5): the pseudonym tokenizer **fails closed** (no key → identity enrichment stays off entirely; raw MAC/username must never be written), and log-timezone resolution **fails loud** (an invalid `LOG_TZ` is a fatal startup error, because silently mis-parsed timestamps corrupt forensic joins rather than merely dropping enrichment).
 
 ## 2. Core Architecture: High-Throughput Pipeline
 
@@ -43,7 +43,30 @@ The system is designed to handle **> 100,000 flows per second** with a low memor
 - **Back-off and Re-queueing:** If a ClickHouse write fails (e.g., transient network issue), the buffer is **not** discarded. The `flush()` function re-queues the rows and applies a 1-second back-off. Rows are only dropped if the queue exceeds the hard memory cap (`500,000` rows), preventing process OOM.
 - **Schema Engine:** The primary table uses `MergeTree`. Aggregation tables (1 min, 1 hour) use `SummingMergeTree` and are populated automatically via `MATERIALIZED VIEW` constructs.
 
-## 4. Key Dependencies & Rationale
+## 4. Forensic Enrichment: Identity ("who") and DNS ("what")
+
+Built for campus-WiFi legal forensics (MUIC use case): given a timestamp and an external service, produce *which internal device/user* — without day-to-day logs ever exposing a real identity. Two subsystems, both optional and env-gated, both following the same shape: a file poller ingests server logs, an in-memory store does best-effort **live tagging** of flows, and append-only ClickHouse event tables are the **forensic source of truth** (the live maps are a convenience, never the record).
+
+### Identity — DHCP + 802.1x/RADIUS ("who")
+- **Sources:** Microsoft NPS RADIUS accounting logs (DTS-XML) give username ↔ MAC sessions; Windows DHCP audit logs give IP ↔ MAC leases. MUIC's RADIUS does **not** carry Framed-IP-Address (auth happens before DHCP), so the chain is always `flow IP + time → DHCP lease → MAC → RADIUS session → user`, joined on MAC. Both mappings are temporal; lease intervals are derived from events (open at assign/renew, close at release/reassign/max-lease fallback).
+- **Pseudonymization:** identifiers are tokenized as `HMAC-SHA256(keyfile, normalized id)` (truncated). Deterministic, so the MAC join works across tables. There is **no token→person mapping table anywhere** — re-identification is recompute-forward: an authorized holder of the key tokenizes a candidate identity and compares. **Fail closed:** if the key file can't be loaded, the whole identity subsystem stays off.
+- **Flow tagging:** 4 columns (`src/dst_mac_token`, `src/dst_user_token`), both directions like dst-tenant attribution.
+- **Gating:** `IDENTITY_TOKEN_KEY_FILE` + at least one of `IDENTITY_NPS_DIR`/`IDENTITY_DHCP_DIR`.
+
+### DNS — BIND9 resolver logs ("what")
+- **Why:** one CDN IP serves thousands of sites; the DNS query is the only network-level record of the actual hostname. Correlation is **per-client**: `(clientIP, answeredIP) → hostname`, so one client's resolution never labels another client's flows.
+- **`DNSStore`:** live map with entries valid for the record TTL bounded to [60s, 1h]; hard-capped at ~1M entries (client×dst cardinality can explode) with expired-first-then-oldest eviction — victim selection runs under `RLock` so hot-path lookups are never stalled (single-mutator invariant: only the poller writes). Hostnames are *not* personal data in this design and stay in the clear.
+- **Parser:** standard BIND9 querylog lines (no answer data) plus a response-line variant *modeled* on RFC 1035 presentation form — pending re-validation against a real dnstap sample. The client source port is captured as the per-line dedup discriminator.
+- **Flow tagging:** `src_hostname`/`dst_hostname`, both orientations (src-as-client tags dst_hostname; dst-as-client tags src_hostname).
+- **Gating:** `DNS_LOG_DIR`.
+
+### Shared machinery
+- **Event tables:** `identity_dhcp_events`, `identity_radius_events`, `dns_events` — `ReplacingMergeTree` with fully-identifying `ORDER BY` keys, so restart/replay re-ingestion deduplicates instead of double-counting; 90d TTL matching `flows`.
+- **File poller (`filepoller.go`):** shared incremental scan core — 30s ticker, per-file byte offsets, rotation/truncation detection, 8MB-per-scan read cap, panic-recovered scans. Owned by one goroutine per store; offsets need no lock.
+- **Timezones (`logtz.go`):** server logs carry naive local timestamps. Parsers interpret them in the zone from per-source overrides (`NPS_LOG_TZ`/`DHCP_LOG_TZ`/`DNS_LOG_TZ`) falling back to `LOG_TZ`, default UTC; invalid zones are fatal at startup. `time/tzdata` is imported so this works on Windows dev machines.
+- **Hot-path cost:** live tagging is RWMutex-guarded map reads only — no I/O, no allocation. All log parsing and ClickHouse event writes happen on the poller goroutines, never in the flow path.
+
+## 5. Key Dependencies & Rationale
 
 - **`goflow2`**: The upstream generator/decoder. It outputs protobuf/JSON. The enricher treats goflow2 fields as immutable read-only inputs.
 - **`goccy/go-json`**: Used instead of `encoding/json` because it significantly reduces allocations during the heavy unmarshal phase.

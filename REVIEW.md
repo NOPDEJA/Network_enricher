@@ -40,3 +40,12 @@ Network sinks are correctly batched and async:
 ## Conclusion
 
 The architecture can comfortably handle 100k flows/s with 4000+ configured users. To consistently hit this ceiling, ensure the deployment provides sufficient Redpanda partitions, multiple worker goroutines (`ENRICH_WORKERS`), and a dedicated fast network link to ClickHouse.
+
+## Addendum (2026-07-09): Identity + DNS Enrichment
+
+Two forensic enrichers were added after this review (identity "who"-tokens, merged 5d20369; DNS "what"-hostnames, merged 9422e3d). The conclusion above is unchanged:
+
+- **Hot path:** each enabled subsystem adds RWMutex-guarded in-memory map reads per flow (identity: both addresses; DNS: both client/answer orientations) — the same read-mostly pattern as `TenantStore`, with no I/O and no allocation in the flow path. A miss leaves fields empty (fail open).
+- **Off the hot path:** log parsing runs on dedicated 30s poller goroutines; identity/DNS event rows go to ClickHouse through small dedicated buffered writers, separate from the flow `BatchWriter`.
+- **Memory:** the DNS live map is the only store whose key space scales with traffic (client × destination); it is hard-capped at ~1M entries with expired-first eviction, where victim *selection* runs under `RLock` so flow-path lookups are not stalled by an eviction sweep.
+- **Verified:** `go test -race` clean and an end-to-end synthetic run on the live pipeline (per-client tagging, replay dedup via `ReplacingMergeTree`) passed 2026-07-09.
