@@ -1,0 +1,6 @@
+08-Jul-2026 09:15:00.123 client @0x7f120 10.0.0.5#54321 (www.example.com): query: www.example.com IN A +E(0)K (10.0.0.1)
+08-Jul-2026 09:15:00.456 client 10.0.0.5#54321 (www.example.com): response: www.example.com IN A NOERROR www.example.com. 300 IN A 93.184.216.34 www.example.com. 300 IN A 93.184.216.35
+08-Jul-2026 09:16:10.001 client 10.0.0.8#40000 (ipv6.example.org): response: ipv6.example.org IN AAAA NOERROR ipv6.example.org. 120 IN AAAA 2606:2800:220:1:248:1893:25c8:1946
+08-Jul-2026 09:17:00.500 client 10.0.0.9#33333 (nope.invalid): response: nope.invalid IN A NXDOMAIN
+08-Jul-2026 09:18:00.000 lame-server resolving 'foo.example.net/A': 8.8.8.8#53
+08-Jul-2026 09:19:00.000 client 10.0.0.5#54321 (MixedCase.Example.COM.): query: MixedCase.Example.COM. IN A +E(0)K (10.0.0.1)
