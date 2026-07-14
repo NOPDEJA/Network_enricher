@@ -258,8 +258,67 @@ func TestTcpdumpMidLineEOF(t *testing.T) {
 	}
 }
 
-// Midnight rollover: a packet whose time-of-day is >1h earlier than the previous
-// one has wrapped past midnight, so its event lands on the next calendar day.
+// A stale pending header must not survive an intervening unindented non-header
+// line: header -> garbage line -> indented payload must yield NO event (the
+// payload has no live header to pair with).
+func TestTcpdumpStalePendingCleared(t *testing.T) {
+	p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+	if evs, err := p.feed(udpHdr); err != nil || len(evs) != 0 {
+		t.Fatalf("header: len=%d err=%v", len(evs), err)
+	}
+	// An unindented non-header line (e.g. a tcpdump banner) clears the pending header.
+	if evs, err := p.feed("3 packets captured"); err != nil || len(evs) != 0 {
+		t.Fatalf("banner: len=%d err=%v, want silent skip", len(evs), err)
+	}
+	// The payload now has no pending header -> silent skip, no stale pairing.
+	if evs, err := p.feed("    10.0.0.66.51578 > 10.0.0.3.53: 31291+ A? example.com. (35)"); err != nil || len(evs) != 0 {
+		t.Fatalf("orphaned payload: len=%d err=%v, want silent skip", len(evs), err)
+	}
+}
+
+// IPv6 transport: tcpdump prints "next-header UDP" (not "proto UDP") for v6
+// packets; the header gate must accept it, and splitIPPort must handle a v6
+// endpoint's "addr.port" (colons in the address, port after the last dot).
+func TestTcpdumpIPv6Transport(t *testing.T) {
+	v6hdr := "15:39:41.068677 IP6 (flowlabel 0x0, hlim 64, next-header UDP (17) payload length 43)"
+	t.Run("v6 query", func(t *testing.T) {
+		p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+		evs := feedPacket(t, p, v6hdr, "    2001:db8::66.51578 > 2001:db8::3.53: 31291+ AAAA? example.com. (35)")
+		if len(evs) != 1 || evs[0].ClientIP != "2001:db8::66" || evs[0].QType != "AAAA" || evs[0].QName != "example.com" {
+			t.Fatalf("v6 query events = %+v", evs)
+		}
+	})
+	t.Run("v6 response", func(t *testing.T) {
+		p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+		evs := feedPacket(t, p, v6hdr, "    2001:db8::3.53 > 2001:db8::66.51578: 31291 1/0/0 example.com. AAAA 2606:2800:220:1:248:1893:25c8:1946 (55)")
+		if len(evs) != 1 || evs[0].ClientIP != "2001:db8::66" || evs[0].AnswerIP != "2606:2800:220:1:248:1893:25c8:1946" || !evs[0].TTLUnknown {
+			t.Fatalf("v6 response events = %+v", evs)
+		}
+	})
+}
+
+// Both endpoints on port 53 (resolver-to-resolver): direction is decided by
+// payload shape, a "QTYPE?" marker meaning a query.
+func TestTcpdumpBothPorts53(t *testing.T) {
+	t.Run("query shape -> client is source", func(t *testing.T) {
+		p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+		evs := feedPacket(t, p, udpHdr, "    10.0.0.9.53 > 10.0.0.3.53: 31291+ A? example.com. (35)")
+		if len(evs) != 1 || evs[0].AnswerIP != "" || evs[0].ClientIP != "10.0.0.9" {
+			t.Fatalf("query-shape events = %+v (want query-only, client 10.0.0.9)", evs)
+		}
+	})
+	t.Run("response shape -> client is dest", func(t *testing.T) {
+		p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+		evs := feedPacket(t, p, udpHdr, "    10.0.0.9.53 > 10.0.0.3.53: 31291 1/0/0 example.com. A 93.184.216.34 (55)")
+		if len(evs) != 1 || evs[0].AnswerIP != "93.184.216.34" || evs[0].ClientIP != "10.0.0.3" {
+			t.Fatalf("response-shape events = %+v (want answer, client 10.0.0.3)", evs)
+		}
+	})
+}
+
+// Midnight rollover: a packet whose time-of-day jumps >12h BACKWARD from the
+// previous one has wrapped past midnight, so its event lands on the next calendar
+// day; a smaller backward jump (reordering / NTP step) must NOT trigger a roll.
 func TestTcpdumpMidnightRollover(t *testing.T) {
 	p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
 	late := "23:59:59.000000 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"
@@ -278,6 +337,24 @@ func TestTcpdumpMidnightRollover(t *testing.T) {
 	wantDay := d0.AddDate(0, 0, 1).YearDay()
 	if d1.YearDay() != wantDay {
 		t.Errorf("post-midnight YearDay = %d, want %d (rolled to next day)", d1.YearDay(), wantDay)
+	}
+}
+
+// A backward time jump under the 12h threshold (packet reordering or an NTP step)
+// must NOT advance baseDate — the two events stay on the same calendar day.
+func TestTcpdumpNoRolloverOnSmallBackwardJump(t *testing.T) {
+	p := newTcpdumpDNSParser(time.UTC, tcpBase, "")
+	later := "15:00:00.000000 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"
+	earlier := "13:00:00.000000 IP (tos 0x0, ttl 128, id 2, offset 0, flags [none], proto UDP (17), length 63)" // 2h back
+
+	first := feedPacket(t, p, later, "    10.0.0.5.5000 > 10.0.0.3.53: 1+ A? a.example.com. (30)")
+	second := feedPacket(t, p, earlier, "    10.0.0.5.5001 > 10.0.0.3.53: 2+ A? b.example.com. (30)")
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("first=%d second=%d, want 1 each", len(first), len(second))
+	}
+	if first[0].EventTime.YearDay() != second[0].EventTime.YearDay() {
+		t.Errorf("2h backward jump advanced the date (%v -> %v); must stay same day",
+			first[0].EventTime, second[0].EventTime)
 	}
 }
 

@@ -95,13 +95,23 @@ func (p *tcpdumpDNSParser) feed(line string) ([]DnsEvent, error) {
 	}
 	tod, ok := parseTOD(tok)
 	if !ok {
-		return nil, nil // not a header
+		// An unindented line that isn't a header means the pending packet's payload
+		// will never arrive (a banner line, or a truncated/interleaved capture), so
+		// drop the stale pending state — it must not pair with a later payload line.
+		p.pending = false
+		return nil, nil
 	}
 
-	// Midnight rollover: a packet more than 1h EARLIER than the previous one has
-	// wrapped past midnight, so advance the anchor date. A small backward jitter
-	// (out-of-order by seconds) stays on the same day.
-	if p.havePrev && p.prevTOD-tod > time.Hour {
+	// Midnight rollover: a packet whose time-of-day jumps >12h BACKWARD from the
+	// previous one has wrapped past midnight, so advance the anchor date. The 12h
+	// threshold (not a hair over 0) means NTP steps and packet reordering — seconds
+	// to minutes of backward jitter — never corrupt baseDate, while a real midnight
+	// wrap in continuous traffic is a ~24h backward jump.
+	//
+	// Accepted limitation: a capture with a >12h silent gap that happens to cross
+	// midnight in the wrong phase can miss a rollover. The real deployment (live
+	// tailing, option b) has continuous traffic, so the wrap is always near-24h.
+	if p.havePrev && p.prevTOD-tod > 12*time.Hour {
 		p.baseDate = p.baseDate.AddDate(0, 0, 1)
 	}
 	p.prevTOD = tod
@@ -109,7 +119,9 @@ func (p *tcpdumpDNSParser) feed(line string) ([]DnsEvent, error) {
 
 	// Only UDP packets carry the DNS payloads we parse; a non-UDP (or EOF-truncated)
 	// header clears pending so its payload line, if any, is silently skipped.
-	if strings.Contains(line, "proto UDP") {
+	// tcpdump prints "proto UDP (17)" for IPv4 and "next-header UDP (17)" for IPv6;
+	// accept either so a dual-stack capture parses (the real sample is v4-only).
+	if strings.Contains(line, "proto UDP") || strings.Contains(line, "next-header UDP") {
 		p.pending = true
 		p.pendingTime = p.baseDate.Add(tod)
 	} else {
@@ -144,8 +156,18 @@ func (p *tcpdumpDNSParser) parsePayload(s string, ts time.Time) ([]DnsEvent, err
 	// Direction by which endpoint is port 53. Neither -> not a DNS transaction.
 	var clientIP string
 	var clientPort uint16
-	isQuery := false
+	var isQuery bool
 	switch {
+	case dstPort == 53 && srcPort == 53:
+		// Both endpoints on port 53 (resolver-to-resolver): port alone can't tell
+		// query from response, so decide by payload shape — a "QTYPE?" question
+		// marker means a query, and the client is then the source.
+		isQuery = payloadHasQueryMarker(payload)
+		if isQuery {
+			clientIP, clientPort = srcIP, srcPort
+		} else {
+			clientIP, clientPort = dstIP, dstPort
+		}
 	case dstPort == 53:
 		isQuery = true
 		clientIP, clientPort = srcIP, srcPort
@@ -165,6 +187,18 @@ func (p *tcpdumpDNSParser) parsePayload(s string, ts time.Time) ([]DnsEvent, err
 		return parseTcpdumpQuery(payload, ts, clientIP, clientPort)
 	}
 	return parseTcpdumpResponse(payload, ts, clientIP, clientPort)
+}
+
+// payloadHasQueryMarker reports whether a DNS payload carries a "QTYPE?" question
+// marker (e.g. "A?", "AAAA?"). It disambiguates query from response when the port
+// pair can't (both endpoints on 53).
+func payloadHasQueryMarker(payload string) bool {
+	for _, f := range strings.Fields(payload) {
+		if strings.HasSuffix(f, "?") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseTcpdumpQuery reads "TXID[flags] [1au] QTYPE? qname. (len)" and emits one
@@ -204,6 +238,12 @@ func parseTcpdumpQuery(payload string, ts time.Time, clientIP string, clientPort
 // the ask, unlike the BIND parser which emits a no-answer event for its combined
 // query+response line. A response whose RRs yield no A/AAAA (PTR/CNAME-only) still
 // emits one no-answer fallback event so the forensic table shows the resolution.
+//
+// FORENSIC GAP: because tcpdump prints NO qname on a zero-answer response, a
+// NXDomain/ServFail can only be attributed via its matching query packet. If that
+// query was not captured (poller started mid-file, or a one-leg capture), the
+// zero-answer response leaves NO dns_events row at all — an unavoidable gap the
+// BIND parser doesn't have (its combined line still carries the qname).
 func parseTcpdumpResponse(payload string, ts time.Time, clientIP string, clientPort uint16) ([]DnsEvent, error) {
 	// Strip the trailing " (len)".
 	if idx := strings.LastIndex(payload, " ("); idx >= 0 {
@@ -257,6 +297,7 @@ func parseTcpdumpResponse(payload string, ts time.Time, clientIP string, clientP
 			QName:      qname,
 			QType:      typ,
 			AnswerIP:   f[2],
+			TTLUnknown: true, // tcpdump text prints no TTL; store grants the unknown-TTL horizon
 		})
 	}
 	if len(events) == 0 {
