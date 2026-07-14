@@ -5,15 +5,15 @@ description: Draft or update a KMUTT weekly internship training report (a biling
 
 # Weekly Practical Training Record generator
 
-Generates/updates the KMUTT weekly internship report by mapping real git commits to weekdays, in the user's established plain-language style. The reports are **personal** — they live in `~/Downloads/`, NOT in the repo.
+Generates/updates the KMUTT weekly internship report by mapping real git commits to weekdays, in the user's established plain-language style. The reports are **personal** — they live in the untracked sibling folder `../Network_Enricher_internal_docs/Weekly_report/` (moved there from `~/Downloads/` on 2026-07-14), NOT in the repo.
 
 ## Output location & naming
 
-`~/Downloads/Weekly_Report_Week<N>_<Mon-date>.md` where `<Mon-date>` is the Monday of that week (`YYYY-MM-DD`). Match existing files there for week numbering and prior weeks' content/style.
+`../Network_Enricher_internal_docs/Weekly_report/Weekly_Report_Week<N>_<Mon-date>.md` (relative to the repo root) where `<Mon-date>` is the Monday of that week (`YYYY-MM-DD`). Match existing files there for week numbering and prior weeks' content/style.
 
 ## Steps
 
-1. **Resolve the week.** Determine week number and its Mon–Fri date range. If unstated, infer from existing `Weekly_Report_Week*.md` files in `~/Downloads/` (continue the sequence) and today's date. KMUTT weeks run Mon–Fri.
+1. **Resolve the week.** Determine week number and its Mon–Fri date range. If unstated, infer from existing `Weekly_Report_Week*.md` files in the output folder (continue the sequence) and today's date. KMUTT weeks run Mon–Fri.
 2. **Pull actuals from git** for that range — run in the repo:
    ```
    git log --since=<Mon> --until=<Sat> --date=format:'%Y-%m-%d %a %H:%M' --pretty=format:'%ad | %s'
@@ -35,4 +35,4 @@ Copy the structure from the most recent existing `Weekly_Report_Week*.md` rather
 
 ## After writing
 
-Update the `weekly-reports` memory file so it reflects the new/finalized week (actuals, planned days, branch). Do **not** commit these reports to the repo — they're pe rsonal and live in Downloads.
+Update the `weekly-reports` memory file so it reflects the new/finalized week (actuals, planned days, branch). Do **not** commit these reports to the repo — they're personal and live in the untracked internal-docs folder.
