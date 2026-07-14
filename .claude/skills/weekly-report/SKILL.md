@@ -1,6 +1,6 @@
 ---
 name: weekly-report
-description: Draft or update a KMUTT "Weekly Practical Training Record" (บันทึกการฝึกงานประจำสัปดาห์) for the Network_Enricher internship from git history. Use when the user asks to write, update, start, or fill a weekly report / internship journal for a given week or date range.
+description: Draft or update a KMUTT weekly internship training report (a bilingual Thai/English document) from git history. Use when asked to write, update, start, or fill a weekly report or internship journal for a week or date range.
 ---
 
 # Weekly Practical Training Record generator
