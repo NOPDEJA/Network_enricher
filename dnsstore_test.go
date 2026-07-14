@@ -38,7 +38,9 @@ func TestDNSTTLBounds(t *testing.T) {
 
 	t.Run("tiny ttl is floored to 60s", func(t *testing.T) {
 		s, clk := newClockedDNSStore(t)
-		s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.2", TTL: 0})
+		// TTL 1 is a genuine tiny record TTL (TTL 0 now means "unknown", granted the
+		// dnsDefaultUnknownTTL horizon — see TestDNSUnknownTTLHorizon).
+		s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.2", TTL: 1})
 		*clk = dnsBase.Add(45 * time.Second) // < 60s floor
 		if h := s.Lookup("10.0.0.6", "93.0.0.2"); h != "b.example.com" {
 			t.Errorf("within floor: %q, want b.example.com", h)
@@ -57,6 +59,48 @@ func TestDNSTTLBounds(t *testing.T) {
 			t.Errorf("past cap: %q, want empty", h)
 		}
 	})
+}
+
+// An answer whose source carried no TTL (TTL 0 — the tcpdump text format prints
+// none) is trusted for the documented dnsDefaultUnknownTTL horizon (10m), which
+// sits inside the [floor, cap] band and so passes through the clamp unchanged.
+func TestDNSUnknownTTLHorizon(t *testing.T) {
+	s, clk := newClockedDNSStore(t)
+	s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.9", TTL: 0})
+
+	*clk = dnsBase.Add(9 * time.Minute) // within the 10m horizon
+	if h := s.Lookup("10.0.0.6", "93.0.0.9"); h != "b.example.com" {
+		t.Errorf("within unknown-ttl horizon: %q, want b.example.com", h)
+	}
+	*clk = dnsBase.Add(11 * time.Minute) // past the 10m horizon
+	if h := s.Lookup("10.0.0.6", "93.0.0.9"); h != "" {
+		t.Errorf("past unknown-ttl horizon: %q, want empty", h)
+	}
+}
+
+// Format routing: NewDNSStore wires the BIND parser (a BIND querylog line parses),
+// and NewDNSStoreTcpdump wires the stateful tcpdump parser (a BIND line is not a
+// tcpdump packet and yields nothing, while a tcpdump header+payload pair does).
+func TestDNSStoreFormatRouting(t *testing.T) {
+	bindLine := "08-Jul-2026 09:15:00.123 client 10.0.0.5#54321 (h.example.com): query: h.example.com IN A +E(0)K (10.0.0.1)"
+
+	bindStore := NewDNSStore("", time.UTC, nil)
+	if evs, err := bindStore.parse(bindLine); err != nil || len(evs) != 1 {
+		t.Fatalf("bind store on bind line: len=%d err=%v, want 1 event", len(evs), err)
+	}
+
+	tcpStore := NewDNSStoreTcpdump("", time.UTC, dnsBase, "", nil)
+	// A BIND line is unindented but has no leading time-of-day token -> silent skip.
+	if evs, err := tcpStore.parse(bindLine); err != nil || len(evs) != 0 {
+		t.Fatalf("tcpdump store on bind line: len=%d err=%v, want 0 events", len(evs), err)
+	}
+	// A real tcpdump header+payload pair produces the query event.
+	if evs, err := tcpStore.parse("15:39:41.068677 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"); err != nil || len(evs) != 0 {
+		t.Fatalf("tcpdump header: len=%d err=%v, want 0 events", len(evs), err)
+	}
+	if evs, err := tcpStore.parse("    10.0.0.66.51578 > 10.0.0.3.53: 31291+ A? example.com. (35)"); err != nil || len(evs) != 1 {
+		t.Fatalf("tcpdump payload: len=%d err=%v, want 1 event", len(evs), err)
+	}
 }
 
 // Both flow orientations resolve through enrich(): the client's resolution of

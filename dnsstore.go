@@ -39,6 +39,12 @@ type DNSStore struct {
 
 	ch *chDNSWriter // ClickHouse persistence; nil when ClickHouse is down
 
+	// parse turns one raw log line into events. Set at construction: the BIND
+	// default wraps parseDNSLine; tcpdump mode uses the stateful parser's feed.
+	// Only the single poller goroutine calls it (see the scan invariant), so a
+	// stateful parser needs no lock.
+	parse func(line string) ([]DnsEvent, error)
+
 	// now is the clock, swappable in tests. Defaults to time.Now.
 	now func() time.Time
 }
@@ -61,6 +67,13 @@ const (
 	dnsMinTTL = 60 * time.Second
 	dnsMaxTTL = time.Hour
 
+	// dnsDefaultUnknownTTL is the validity granted to an answer whose source omits
+	// the record TTL (the tcpdump text format prints no TTLs). Chosen inside the
+	// [dnsMinTTL, dnsMaxTTL] band so the floor/cap below leave it unchanged: long
+	// enough to tag the flows following the resolution, short enough not to pin a
+	// stale mapping. BIND answer events carry a real TTL and never hit this.
+	dnsDefaultUnknownTTL = 10 * time.Minute
+
 	// dnsMaxEntries is the hard cap. client×dst cardinality can blow up, so this
 	// is the OOM backstop, not just the TTL sweep. ~1M entries.
 	dnsMaxEntries = 1 << 20
@@ -80,11 +93,22 @@ func NewDNSStore(dnsDir string, dnsLoc *time.Location, conn driver.Conn) *DNSSto
 		offsets: make(map[string]int64),
 		now:     time.Now,
 	}
+	s.parse = func(line string) ([]DnsEvent, error) { return parseDNSLine(line, s.dnsLoc) }
 	if conn != nil {
 		w := &chDNSWriter{conn: conn, maxBuffer: 100_000}
 		w.sendFn = w.sendDNS
 		s.ch = w
 	}
+	return s
+}
+
+// NewDNSStoreTcpdump builds a store that ingests `tcpdump -v` verbose text instead
+// of BIND resolver logs. It reuses NewDNSStore's map/eviction/persistence and only
+// swaps the parse function for the stateful two-line tcpdump parser. baseDate seeds
+// the parser's date anchor (tcpdump prints no date); resolverIP may be "".
+func NewDNSStoreTcpdump(dnsDir string, dnsLoc *time.Location, baseDate time.Time, resolverIP string, conn driver.Conn) *DNSStore {
+	s := NewDNSStore(dnsDir, dnsLoc, conn)
+	s.parse = newTcpdumpDNSParser(s.dnsLoc, baseDate, resolverIP).feed
 	return s
 }
 
@@ -124,7 +148,16 @@ func (s *DNSStore) applyDNS(e DnsEvent) {
 	if e.AnswerIP == "" || e.QName == "" {
 		return
 	}
-	ttl := time.Duration(e.TTL) * time.Second
+	// AnswerIP is non-empty here (guarded above). A zero TTL means the source
+	// carried no TTL (tcpdump text) rather than a genuine 0-second record, so grant
+	// the documented unknown-TTL horizon; real TTLs pass through. Both are still
+	// clamped to [dnsMinTTL, dnsMaxTTL].
+	var ttl time.Duration
+	if e.TTL == 0 {
+		ttl = dnsDefaultUnknownTTL
+	} else {
+		ttl = time.Duration(e.TTL) * time.Second
+	}
 	if ttl > dnsMaxTTL {
 		ttl = dnsMaxTTL
 	}
@@ -283,7 +316,7 @@ func (s *DNSStore) scan() {
 }
 
 func (s *DNSStore) ingestDNS(line string) {
-	evs, err := parseDNSLine(line, s.dnsLoc)
+	evs, err := s.parse(line)
 	if err != nil {
 		dnsParseErrors.Inc()
 		return
