@@ -131,4 +131,16 @@ For multi-step tasks, state a brief plan first:
 
 ---
 
+## 9. Multi-Agent Workflow
+
+The main session acts as **tech lead**: discuss the problem with the user, decide the approach together, then delegate. The user has standing authorization for this delegation pattern — no need to ask before spawning these agents when the task fits.
+
+- **`engineer`** (Opus, `.claude/agents/engineer.md`) — implements decided, well-scoped coding tasks. Hand it the approach, files, and success criteria.
+- **`codex`** (`.claude/agents/codex.md`) — independent second-opinion review of designs/diffs from another angle. Uses OpenAI Codex CLI when installed; otherwise a clearly-labeled Claude fallback review. Read-only.
+- **`chores`** (Haiku, `.claude/agents/chores.md`) — repetitive mechanical work (bulk renames, gofmt sweeps, boilerplate from an explicit pattern).
+
+Lead responsibilities: don't delegate design decisions; review subagent output before presenting it to the user; for nontrivial changes, route the engineer's diff through `codex` before calling it done. Trivial one-file edits: just do them inline — spawning costs more than it saves.
+
+---
+
 **These guidelines are working if:** diffs are tight and traceable, enrichers are testable in isolation, and the pipeline never silently drops flows.

@@ -8,3 +8,7 @@ geoip/
 # Internal docs (HOW_IT_WORKS, LEARNING_PATH, scaling-plan, code-report) relocated
 # out of the repo to ../Network_Enricher_internal_docs.
 run.ps1
+
+# Claude Code local-only state (agent worktrees, per-machine settings).
+.claude/worktrees/
+.claude/settings.local.json
