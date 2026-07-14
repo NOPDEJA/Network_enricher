@@ -321,9 +321,40 @@ func main() {
 		if writer != nil {
 			conn = writer.conn
 		}
-		dns = NewDNSStore(dnsDir, dnsLoc, conn)
+		// DNS_LOG_FORMAT selects the parser: bind (default) reads BIND9 resolver
+		// logs; tcpdump reads `tcpdump -v` verbose text. An unknown value is fatal
+		// (fail loud, like a bad TZ) rather than silently ingesting nothing.
+		switch format := getenv("DNS_LOG_FORMAT", "bind"); format {
+		case "bind":
+			dns = NewDNSStore(dnsDir, dnsLoc, conn)
+			slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "format", format, "clickhouse", conn != nil)
+		case "tcpdump":
+			// tcpdump text prints no date; anchor to DNS_TCPDUMP_DATE (YYYY-MM-DD in
+			// the DNS log location) or today. DNS_TCPDUMP_RESOLVER_IP, if set, drops
+			// the upstream leg to the public forwarder.
+			resolverIP := os.Getenv("DNS_TCPDUMP_RESOLVER_IP")
+			baseDate := time.Now().In(dnsLoc)
+			if ds := os.Getenv("DNS_TCPDUMP_DATE"); ds != "" {
+				d, derr := time.ParseInLocation("2006-01-02", ds, dnsLoc)
+				if derr != nil {
+					slog.Error("dns: invalid DNS_TCPDUMP_DATE (want YYYY-MM-DD)", "value", ds, "err", derr)
+					os.Exit(1)
+				}
+				baseDate = d
+			} else {
+				// tcpdump text carries no date, so a live tail anchors to today — but
+				// replaying a historical capture then mis-dates every event. Warn loudly.
+				slog.Warn("dns: DNS_TCPDUMP_DATE unset, defaulting capture date to today — set it when replaying a historical capture",
+					"date", baseDate.Format("2006-01-02"))
+			}
+			dns = NewDNSStoreTcpdump(dnsDir, dnsLoc, baseDate, resolverIP, conn)
+			slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "format", format,
+				"date", baseDate.Format("2006-01-02"), "resolver_ip", resolverIP, "clickhouse", conn != nil)
+		default:
+			slog.Error("dns: invalid DNS_LOG_FORMAT (want bind or tcpdump)", "value", format)
+			os.Exit(1)
+		}
 		dns.StartPoller(ctx)
-		slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "clickhouse", conn != nil)
 	} else {
 		slog.Info("dns enrichment disabled", "reason", "DNS_LOG_DIR not set")
 	}

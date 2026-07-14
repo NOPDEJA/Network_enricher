@@ -27,6 +27,12 @@ type DnsEvent struct {
 	QType      string // "A" or "AAAA" (the record types we tag on)
 	AnswerIP   string // "" for a query-only line
 	TTL        uint32 // 0 for a query-only line
+	// TTLUnknown marks an answer whose source carried NO TTL (the tcpdump text
+	// format prints none), distinct from a genuine TTL==0 record. Only the tcpdump
+	// parser sets it, and only on answer events; applyDNS then grants the
+	// dnsDefaultUnknownTTL horizon instead of clamping 0 to the 60s floor. Not
+	// persisted (the dns_events TTL column stores 0 either way).
+	TTLUnknown bool
 }
 
 var errMalformedDNS = errors.New("malformed BIND log line")

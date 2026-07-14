@@ -275,7 +275,7 @@ const (
 // scanDir tails one identity log directory using the shared incremental-scan
 // core (see filepoller.go), routing each line to the matching parser.
 func (s *IdentityStore) scanDir(dir, source string) {
-	scanAppendedDir(dir, source, s.offsets, func(line string) {
+	scanAppendedDir(dir, source, s.offsets, func(_, line string) {
 		if source == sourceNPS {
 			s.ingestNPS(line)
 		} else {

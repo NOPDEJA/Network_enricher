@@ -39,6 +39,20 @@ type DNSStore struct {
 
 	ch *chDNSWriter // ClickHouse persistence; nil when ClickHouse is down
 
+	// newParser builds a fresh line parser for ONE log file. Per-file because the
+	// tcpdump parser is stateful across its two-line packets: a pending header from
+	// one file must never pair with a payload from another (cross-file =
+	// wrong-client attribution, an evidence-integrity bug). The BIND factory returns
+	// a stateless closure, so one-per-file is harmless. Set at construction.
+	newParser func() func(line string) ([]DnsEvent, error)
+
+	// parsers holds the live parser per file path, created on first sight of a path.
+	// It shares offsets' lifecycle and key set: an entry is created when a file
+	// first yields a line, retained for process life, and bounded by the dir's file
+	// count (offsets is never pruned either, so the two stay in sync and bounded).
+	// Only the single poller goroutine touches it, so it needs no lock.
+	parsers map[string]func(line string) ([]DnsEvent, error)
+
 	// now is the clock, swappable in tests. Defaults to time.Now.
 	now func() time.Time
 }
@@ -61,6 +75,13 @@ const (
 	dnsMinTTL = 60 * time.Second
 	dnsMaxTTL = time.Hour
 
+	// dnsDefaultUnknownTTL is the validity granted to an answer whose source omits
+	// the record TTL (the tcpdump text format prints no TTLs). Chosen inside the
+	// [dnsMinTTL, dnsMaxTTL] band so the floor/cap below leave it unchanged: long
+	// enough to tag the flows following the resolution, short enough not to pin a
+	// stale mapping. BIND answer events carry a real TTL and never hit this.
+	dnsDefaultUnknownTTL = 10 * time.Minute
+
 	// dnsMaxEntries is the hard cap. client×dst cardinality can blow up, so this
 	// is the OOM backstop, not just the TTL sweep. ~1M entries.
 	dnsMaxEntries = 1 << 20
@@ -78,12 +99,28 @@ func NewDNSStore(dnsDir string, dnsLoc *time.Location, conn driver.Conn) *DNSSto
 		dnsDir:  dnsDir,
 		dnsLoc:  dnsLoc,
 		offsets: make(map[string]int64),
+		parsers: make(map[string]func(line string) ([]DnsEvent, error)),
 		now:     time.Now,
+	}
+	s.newParser = func() func(line string) ([]DnsEvent, error) {
+		return func(line string) ([]DnsEvent, error) { return parseDNSLine(line, s.dnsLoc) }
 	}
 	if conn != nil {
 		w := &chDNSWriter{conn: conn, maxBuffer: 100_000}
 		w.sendFn = w.sendDNS
 		s.ch = w
+	}
+	return s
+}
+
+// NewDNSStoreTcpdump builds a store that ingests `tcpdump -v` verbose text instead
+// of BIND resolver logs. It reuses NewDNSStore's map/eviction/persistence and only
+// swaps the parse function for the stateful two-line tcpdump parser. baseDate seeds
+// the parser's date anchor (tcpdump prints no date); resolverIP may be "".
+func NewDNSStoreTcpdump(dnsDir string, dnsLoc *time.Location, baseDate time.Time, resolverIP string, conn driver.Conn) *DNSStore {
+	s := NewDNSStore(dnsDir, dnsLoc, conn)
+	s.newParser = func() func(line string) ([]DnsEvent, error) {
+		return newTcpdumpDNSParser(s.dnsLoc, baseDate, resolverIP).feed
 	}
 	return s
 }
@@ -124,7 +161,17 @@ func (s *DNSStore) applyDNS(e DnsEvent) {
 	if e.AnswerIP == "" || e.QName == "" {
 		return
 	}
-	ttl := time.Duration(e.TTL) * time.Second
+	// Only an answer flagged TTLUnknown (the tcpdump text format prints no TTL) gets
+	// the documented unknown-TTL horizon. A genuine TTL — including a real BIND
+	// TTL==0 record — passes through as-is and is clamped to the 60s floor, so the
+	// tcpdump default never leaks into the BIND path. Both are clamped to
+	// [dnsMinTTL, dnsMaxTTL].
+	var ttl time.Duration
+	if e.TTLUnknown {
+		ttl = dnsDefaultUnknownTTL
+	} else {
+		ttl = time.Duration(e.TTL) * time.Second
+	}
 	if ttl > dnsMaxTTL {
 		ttl = dnsMaxTTL
 	}
@@ -282,8 +329,16 @@ func (s *DNSStore) scan() {
 	s.evictExpired()
 }
 
-func (s *DNSStore) ingestDNS(line string) {
-	evs, err := parseDNSLine(line, s.dnsLoc)
+// ingestDNS parses one line from the file at path through THAT file's parser,
+// creating it on first sight. The per-file parser keeps the stateful tcpdump
+// parser's pending-header state from leaking across files (see the parsers field).
+func (s *DNSStore) ingestDNS(path, line string) {
+	p := s.parsers[path]
+	if p == nil {
+		p = s.newParser()
+		s.parsers[path] = p
+	}
+	evs, err := p(line)
 	if err != nil {
 		dnsParseErrors.Inc()
 		return
