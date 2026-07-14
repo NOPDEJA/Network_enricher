@@ -38,9 +38,9 @@ func TestDNSTTLBounds(t *testing.T) {
 
 	t.Run("tiny ttl is floored to 60s", func(t *testing.T) {
 		s, clk := newClockedDNSStore(t)
-		// TTL 1 is a genuine tiny record TTL (TTL 0 now means "unknown", granted the
-		// dnsDefaultUnknownTTL horizon — see TestDNSUnknownTTLHorizon).
-		s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.2", TTL: 1})
+		// A genuine TTL==0 record (TTLUnknown false) still clamps to the 60s floor;
+		// only a TTLUnknown answer gets the horizon (see TestDNSUnknownTTLHorizon).
+		s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.2", TTL: 0})
 		*clk = dnsBase.Add(45 * time.Second) // < 60s floor
 		if h := s.Lookup("10.0.0.6", "93.0.0.2"); h != "b.example.com" {
 			t.Errorf("within floor: %q, want b.example.com", h)
@@ -66,7 +66,7 @@ func TestDNSTTLBounds(t *testing.T) {
 // sits inside the [floor, cap] band and so passes through the clamp unchanged.
 func TestDNSUnknownTTLHorizon(t *testing.T) {
 	s, clk := newClockedDNSStore(t)
-	s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.9", TTL: 0})
+	s.applyDNS(DnsEvent{EventTime: dnsBase, ClientIP: "10.0.0.6", QName: "b.example.com", QType: "A", AnswerIP: "93.0.0.9", TTL: 0, TTLUnknown: true})
 
 	*clk = dnsBase.Add(9 * time.Minute) // within the 10m horizon
 	if h := s.Lookup("10.0.0.6", "93.0.0.9"); h != "b.example.com" {
@@ -84,22 +84,46 @@ func TestDNSUnknownTTLHorizon(t *testing.T) {
 func TestDNSStoreFormatRouting(t *testing.T) {
 	bindLine := "08-Jul-2026 09:15:00.123 client 10.0.0.5#54321 (h.example.com): query: h.example.com IN A +E(0)K (10.0.0.1)"
 
-	bindStore := NewDNSStore("", time.UTC, nil)
-	if evs, err := bindStore.parse(bindLine); err != nil || len(evs) != 1 {
+	bindParse := NewDNSStore("", time.UTC, nil).newParser()
+	if evs, err := bindParse(bindLine); err != nil || len(evs) != 1 {
 		t.Fatalf("bind store on bind line: len=%d err=%v, want 1 event", len(evs), err)
 	}
 
-	tcpStore := NewDNSStoreTcpdump("", time.UTC, dnsBase, "", nil)
+	tcpParse := NewDNSStoreTcpdump("", time.UTC, dnsBase, "", nil).newParser()
 	// A BIND line is unindented but has no leading time-of-day token -> silent skip.
-	if evs, err := tcpStore.parse(bindLine); err != nil || len(evs) != 0 {
+	if evs, err := tcpParse(bindLine); err != nil || len(evs) != 0 {
 		t.Fatalf("tcpdump store on bind line: len=%d err=%v, want 0 events", len(evs), err)
 	}
 	// A real tcpdump header+payload pair produces the query event.
-	if evs, err := tcpStore.parse("15:39:41.068677 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"); err != nil || len(evs) != 0 {
+	if evs, err := tcpParse("15:39:41.068677 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"); err != nil || len(evs) != 0 {
 		t.Fatalf("tcpdump header: len=%d err=%v, want 0 events", len(evs), err)
 	}
-	if evs, err := tcpStore.parse("    10.0.0.66.51578 > 10.0.0.3.53: 31291+ A? example.com. (35)"); err != nil || len(evs) != 1 {
+	if evs, err := tcpParse("    10.0.0.66.51578 > 10.0.0.3.53: 31291+ A? example.com. (35)"); err != nil || len(evs) != 1 {
 		t.Fatalf("tcpdump payload: len=%d err=%v, want 1 event", len(evs), err)
+	}
+}
+
+// Per-file parser isolation: a pending header in one file must never pair with a
+// payload from another (cross-file mis-attribution). The store keeps one stateful
+// parser per path, so an orphan payload in file B yields nothing until B carries
+// its own header.
+func TestDNSPerFileParserIsolation(t *testing.T) {
+	s := NewDNSStoreTcpdump("", time.UTC, tcpBase, "", nil)
+	header := "15:39:41.068677 IP (tos 0x0, ttl 128, id 1, offset 0, flags [none], proto UDP (17), length 63)"
+	resp := "    10.0.0.3.53 > 10.0.0.66.51578: 31291 1/0/0 example.com. A 93.184.216.34 (55)"
+
+	// Header lands in file A; the payload arrives in file B — they must NOT pair.
+	s.ingestDNS("fileA.pcap", header)
+	s.ingestDNS("fileB.pcap", resp)
+	if len(s.entries) != 0 {
+		t.Fatalf("cross-file pairing produced %d entries, want 0", len(s.entries))
+	}
+
+	// Once file B has its own header, its payload pairs correctly within B.
+	s.ingestDNS("fileB.pcap", header)
+	s.ingestDNS("fileB.pcap", resp)
+	if _, ok := s.entries[dnsKey{"10.0.0.66", "93.184.216.34"}]; !ok {
+		t.Fatal("same-file header+payload should have produced an entry")
 	}
 }
 
@@ -220,8 +244,8 @@ func TestDNSIngest(t *testing.T) {
 	s, clk := newClockedDNSStore(t)
 	beforeErr := testutil.ToFloat64(dnsParseErrors)
 
-	s.ingestDNS("08-Jul-2026 12:00:00.000 client 10.0.0.5#5 (good.example.com): response: good.example.com IN A NOERROR good.example.com. 300 IN A 5.5.5.5")
-	s.ingestDNS("99-Xxx-9999 99:99:99.999 client 10.0.0.5#5 (bad): query: bad IN A + (x)") // bad timestamp
+	s.ingestDNS("named.log", "08-Jul-2026 12:00:00.000 client 10.0.0.5#5 (good.example.com): response: good.example.com IN A NOERROR good.example.com. 300 IN A 5.5.5.5")
+	s.ingestDNS("named.log", "99-Xxx-9999 99:99:99.999 client 10.0.0.5#5 (bad): query: bad IN A + (x)") // bad timestamp
 
 	if delta := testutil.ToFloat64(dnsParseErrors) - beforeErr; delta != 1 {
 		t.Errorf("parse error delta = %v, want 1", delta)

@@ -341,6 +341,11 @@ func main() {
 					os.Exit(1)
 				}
 				baseDate = d
+			} else {
+				// tcpdump text carries no date, so a live tail anchors to today — but
+				// replaying a historical capture then mis-dates every event. Warn loudly.
+				slog.Warn("dns: DNS_TCPDUMP_DATE unset, defaulting capture date to today — set it when replaying a historical capture",
+					"date", baseDate.Format("2006-01-02"))
 			}
 			dns = NewDNSStoreTcpdump(dnsDir, dnsLoc, baseDate, resolverIP, conn)
 			slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "format", format,

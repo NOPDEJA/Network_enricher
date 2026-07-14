@@ -39,11 +39,19 @@ type DNSStore struct {
 
 	ch *chDNSWriter // ClickHouse persistence; nil when ClickHouse is down
 
-	// parse turns one raw log line into events. Set at construction: the BIND
-	// default wraps parseDNSLine; tcpdump mode uses the stateful parser's feed.
-	// Only the single poller goroutine calls it (see the scan invariant), so a
-	// stateful parser needs no lock.
-	parse func(line string) ([]DnsEvent, error)
+	// newParser builds a fresh line parser for ONE log file. Per-file because the
+	// tcpdump parser is stateful across its two-line packets: a pending header from
+	// one file must never pair with a payload from another (cross-file =
+	// wrong-client attribution, an evidence-integrity bug). The BIND factory returns
+	// a stateless closure, so one-per-file is harmless. Set at construction.
+	newParser func() func(line string) ([]DnsEvent, error)
+
+	// parsers holds the live parser per file path, created on first sight of a path.
+	// It shares offsets' lifecycle and key set: an entry is created when a file
+	// first yields a line, retained for process life, and bounded by the dir's file
+	// count (offsets is never pruned either, so the two stay in sync and bounded).
+	// Only the single poller goroutine touches it, so it needs no lock.
+	parsers map[string]func(line string) ([]DnsEvent, error)
 
 	// now is the clock, swappable in tests. Defaults to time.Now.
 	now func() time.Time
@@ -91,9 +99,12 @@ func NewDNSStore(dnsDir string, dnsLoc *time.Location, conn driver.Conn) *DNSSto
 		dnsDir:  dnsDir,
 		dnsLoc:  dnsLoc,
 		offsets: make(map[string]int64),
+		parsers: make(map[string]func(line string) ([]DnsEvent, error)),
 		now:     time.Now,
 	}
-	s.parse = func(line string) ([]DnsEvent, error) { return parseDNSLine(line, s.dnsLoc) }
+	s.newParser = func() func(line string) ([]DnsEvent, error) {
+		return func(line string) ([]DnsEvent, error) { return parseDNSLine(line, s.dnsLoc) }
+	}
 	if conn != nil {
 		w := &chDNSWriter{conn: conn, maxBuffer: 100_000}
 		w.sendFn = w.sendDNS
@@ -108,7 +119,9 @@ func NewDNSStore(dnsDir string, dnsLoc *time.Location, conn driver.Conn) *DNSSto
 // the parser's date anchor (tcpdump prints no date); resolverIP may be "".
 func NewDNSStoreTcpdump(dnsDir string, dnsLoc *time.Location, baseDate time.Time, resolverIP string, conn driver.Conn) *DNSStore {
 	s := NewDNSStore(dnsDir, dnsLoc, conn)
-	s.parse = newTcpdumpDNSParser(s.dnsLoc, baseDate, resolverIP).feed
+	s.newParser = func() func(line string) ([]DnsEvent, error) {
+		return newTcpdumpDNSParser(s.dnsLoc, baseDate, resolverIP).feed
+	}
 	return s
 }
 
@@ -148,12 +161,13 @@ func (s *DNSStore) applyDNS(e DnsEvent) {
 	if e.AnswerIP == "" || e.QName == "" {
 		return
 	}
-	// AnswerIP is non-empty here (guarded above). A zero TTL means the source
-	// carried no TTL (tcpdump text) rather than a genuine 0-second record, so grant
-	// the documented unknown-TTL horizon; real TTLs pass through. Both are still
-	// clamped to [dnsMinTTL, dnsMaxTTL].
+	// Only an answer flagged TTLUnknown (the tcpdump text format prints no TTL) gets
+	// the documented unknown-TTL horizon. A genuine TTL — including a real BIND
+	// TTL==0 record — passes through as-is and is clamped to the 60s floor, so the
+	// tcpdump default never leaks into the BIND path. Both are clamped to
+	// [dnsMinTTL, dnsMaxTTL].
 	var ttl time.Duration
-	if e.TTL == 0 {
+	if e.TTLUnknown {
 		ttl = dnsDefaultUnknownTTL
 	} else {
 		ttl = time.Duration(e.TTL) * time.Second
@@ -315,8 +329,16 @@ func (s *DNSStore) scan() {
 	s.evictExpired()
 }
 
-func (s *DNSStore) ingestDNS(line string) {
-	evs, err := s.parse(line)
+// ingestDNS parses one line from the file at path through THAT file's parser,
+// creating it on first sight. The per-file parser keeps the stateful tcpdump
+// parser's pending-header state from leaking across files (see the parsers field).
+func (s *DNSStore) ingestDNS(path, line string) {
+	p := s.parsers[path]
+	if p == nil {
+		p = s.newParser()
+		s.parsers[path] = p
+	}
+	evs, err := p(line)
 	if err != nil {
 		dnsParseErrors.Inc()
 		return
