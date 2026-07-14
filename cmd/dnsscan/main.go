@@ -9,12 +9,13 @@
 //	go run ./cmd/dnsscan -file capture.txt -tz Asia/Bangkok -date 2026-07-13 -resolver 192.168.64.3
 //
 // NOTE: the parser below (tcpdumpDNSParser + helpers, and the DnsEvent struct
-// and normalizeHost) is a VERBATIM vendored copy of the canonical parser in the
-// repo-root package (tcpdumplog.go / dnslog.go / pseudonym.go). Go cannot import
-// a `package main`, and the repo's cmd/ tools are deliberately standalone mains
-// that re-declare the little they need (see cmd/trace, cmd/loadgen). Keep this
-// copy byte-for-byte in sync with tcpdumplog.go if the parser changes; the
-// parser tests live with the canonical copy.
+// and normalizeHost) is a behaviorally-identical MANUAL COPY of the canonical
+// parser in the repo-root package (tcpdumplog.go / dnslog.go / pseudonym.go) —
+// comments are trimmed and some locals renamed, so it is NOT byte-for-byte. Go
+// cannot import a `package main`, and the repo's cmd/ tools are deliberately
+// standalone mains that re-declare the little they need (see cmd/trace,
+// cmd/loadgen). When the canonical parser changes, diff it against this copy by
+// hand and re-sync; the parser tests live with the canonical copy.
 package main
 
 import (
@@ -69,13 +70,26 @@ func main() {
 	rep.print(os.Stdout, *file, loc, baseDate, *resolver)
 }
 
+// lineKind is a payload line's DNS direction, decided once and shared by the raw
+// tally and the event classification (so they never disagree).
+type lineKind int
+
+const (
+	kindOther lineKind = iota
+	kindQuery
+	kindResponse
+)
+
 // report accumulates the streaming stats. Client IPs are only ever counted, never
 // stored for display (uniqueClients is a set used solely for its size).
 type report struct {
+	resolverIP string
+
 	totalLines int
 	packets    int // header lines with a valid time-of-day
 
-	queriesByType map[string]int
+	queriesByType map[string]int // raw, includes the upstream resolver leg
+	clientQueries int            // queries after dropping the upstream leg (for avg qps)
 	responses     int
 
 	answerA    int
@@ -106,6 +120,7 @@ var statusWordRe = regexp.MustCompile(`\b(NXDomain|ServFail|NoError|Refused|Form
 
 func scan(f *os.File, loc *time.Location, baseDate time.Time, resolverIP string) *report {
 	r := &report{
+		resolverIP:    resolverIP,
 		queriesByType: map[string]int{},
 		uniqueClients: map[string]struct{}{},
 		uniqueQNames:  map[string]struct{}{},
@@ -117,6 +132,11 @@ func scan(f *os.File, loc *time.Location, baseDate time.Time, resolverIP string)
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8<<20) // real capture is 66MB; long RR lists per line
 
+	// udpPending mirrors the parser's own UDP gate for the RAW tallies: a payload is
+	// only classified when its header was a UDP packet, so a TCP (or other) payload
+	// isn't miscounted as a query just because a port happens to be 53.
+	udpPending := false
+
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		r.totalLines++
@@ -125,14 +145,21 @@ func scan(f *os.File, loc *time.Location, baseDate time.Time, resolverIP string)
 		}
 
 		// Cheap raw classification for the line-level tallies the event stream can't
-		// recover (packet count, per-qtype queries incl. upstream, status words).
+		// recover (packet count, per-qtype queries incl. upstream, status words). The
+		// direction (kind) decided here is reused to bucket the parser's events, so
+		// the raw tally and the event tally never disagree.
 		indented := line[0] == ' ' || line[0] == '\t'
+		kind := kindOther
 		if !indented {
 			if _, ok := parseTOD(firstToken(line)); ok {
 				r.packets++
+				udpPending = strings.Contains(line, "proto UDP") || strings.Contains(line, "next-header UDP")
+			} else {
+				udpPending = false
 			}
-		} else {
-			classifyPayload(strings.TrimLeft(line, " \t"), r)
+		} else if udpPending {
+			kind = classifyPayload(strings.TrimLeft(line, " \t"), r)
+			udpPending = false
 		}
 
 		evs, err := p.feed(line)
@@ -162,7 +189,7 @@ func scan(f *os.File, loc *time.Location, baseDate time.Time, resolverIP string)
 			}
 			r.haveSpan = true
 		}
-		classifyEvents(evs, r)
+		classifyEvents(kind, evs, r)
 	}
 	if serr := sc.Err(); serr != nil {
 		fmt.Fprintf(os.Stderr, "dnsscan: read error: %v\n", serr)
@@ -170,67 +197,97 @@ func scan(f *os.File, loc *time.Location, baseDate time.Time, resolverIP string)
 	return r
 }
 
-// classifyPayload does the raw line-level tallies: query qtypes (including
-// upstream-leg queries the parser drops) and response status words.
-func classifyPayload(payload string, r *report) {
+// classifyPayload decides a payload line's direction (mirroring the parser's own
+// port/shape logic) and does the raw line-level tallies: query qtypes (including
+// the upstream-leg queries the parser drops), a post-filter client-query count,
+// response count, and status words. It returns the direction so the caller can
+// bucket that same line's parser events consistently.
+func classifyPayload(payload string, r *report) lineKind {
 	gt := strings.Index(payload, " > ")
 	if gt < 0 {
-		return
+		return kindOther
 	}
 	rest := payload[gt+3:]
 	colon := strings.Index(rest, ": ")
 	if colon < 0 {
-		return
+		return kindOther
 	}
-	_, srcPort, ok1 := splitIPPort(payload[:gt])
-	_, dstPort, ok2 := splitIPPort(rest[:colon])
+	srcIP, srcPort, ok1 := splitIPPort(payload[:gt])
+	dstIP, dstPort, ok2 := splitIPPort(rest[:colon])
 	if !ok1 || !ok2 {
-		return
+		return kindOther
 	}
 	body := rest[colon+2:]
+
+	isQuery := false
+	clientIP := ""
 	switch {
+	case dstPort == 53 && srcPort == 53:
+		isQuery = payloadHasQueryMarker(body)
+		if isQuery {
+			clientIP = srcIP
+		} else {
+			clientIP = dstIP
+		}
 	case dstPort == 53:
+		isQuery = true
+		clientIP = srcIP
+	case srcPort == 53:
+		clientIP = dstIP
+	default:
+		return kindOther
+	}
+
+	if isQuery {
 		for _, fld := range strings.Fields(body) {
 			if strings.HasSuffix(fld, "?") {
 				r.queriesByType[strings.TrimSuffix(fld, "?")]++
 				break
 			}
 		}
-	case srcPort == 53:
-		r.responses++
-		if m := statusWordRe.FindString(body); m != "" {
-			switch m {
-			case "NXDomain":
-				r.nxDomain++
-			case "ServFail":
-				r.servFail++
-			}
+		if r.resolverIP == "" || clientIP != r.resolverIP {
+			r.clientQueries++ // exclude the upstream resolver leg from the qps rate
+		}
+		return kindQuery
+	}
+
+	r.responses++
+	if m := statusWordRe.FindString(body); m != "" {
+		switch m {
+		case "NXDomain":
+			r.nxDomain++
+		case "ServFail":
+			r.servFail++
 		}
 	}
+	return kindResponse
 }
 
-// classifyEvents buckets the parser's emitted events for a single payload line:
-// answers (A/AAAA), a query-only event, or a no-answer fallback event.
-func classifyEvents(evs []DnsEvent, r *report) {
-	if len(evs) == 1 && evs[0].AnswerIP == "" {
-		// A query-only event (from a query line) or a no-answer fallback (from a
-		// response line). CNAME/PTR fallbacks carry a non-address QType; query-only
-		// events carry the queried type. Distinguish on the record type.
-		switch evs[0].QType {
-		case "A", "AAAA", "HTTPS", "SRV", "SOA":
+// classifyEvents buckets a single payload line's parser events using the line's
+// already-decided direction — no guessing from QType, so PTR/NS/SVCB/CNAME/TXT
+// queries land in query-only (and the top-15) rather than being mislabeled
+// fallbacks.
+func classifyEvents(kind lineKind, evs []DnsEvent, r *report) {
+	switch kind {
+	case kindQuery:
+		// A non-upstream query yields exactly one query-only event (empty answer);
+		// an upstream-filtered query yields none.
+		for _, e := range evs {
 			r.queryOnly++
-			r.qnameQueries[evs[0].QName]++
-		default:
-			r.fallback++
+			r.qnameQueries[e.QName]++
 		}
-		return
-	}
-	for _, e := range evs {
-		switch e.QType {
-		case "A":
-			r.answerA++
-		case "AAAA":
-			r.answerAAAA++
+	case kindResponse:
+		if len(evs) == 1 && evs[0].AnswerIP == "" {
+			r.fallback++ // PTR/CNAME-only: no address to tag
+			return
+		}
+		for _, e := range evs {
+			switch e.QType {
+			case "A":
+				r.answerA++
+			case "AAAA":
+				r.answerAAAA++
+			}
 		}
 	}
 }
@@ -252,11 +309,11 @@ func (r *report) print(w *os.File, path string, loc *time.Location, baseDate tim
 	fmt.Fprintf(out, "parse errors . . . . . . %d\n", r.parseErr)
 	fmt.Fprintf(out, "silent skips . . . . . . %d\n\n", r.silentSkip)
 
-	fmt.Fprintln(out, "queries by qtype:")
+	fmt.Fprintln(out, "queries by qtype (raw, incl. upstream leg):")
 	for _, kv := range sortedByCountDesc(r.queriesByType) {
 		fmt.Fprintf(out, "  %-6s %d\n", kv.key, kv.n)
 	}
-	fmt.Fprintln(out)
+	fmt.Fprintf(out, "client queries (excl. upstream) . %d\n\n", r.clientQueries)
 
 	fmt.Fprintln(out, "events:")
 	fmt.Fprintf(out, "  answer A . . . . . . . %d\n", r.answerA)
@@ -283,12 +340,9 @@ func (r *report) print(w *os.File, path string, loc *time.Location, baseDate tim
 		span := r.lastSeen.Sub(r.firstSeen)
 		fmt.Fprintf(out, "event-time span  . . . . %s .. %s (%s)\n",
 			r.firstSeen.Format("15:04:05"), r.lastSeen.Format("15:04:05"), span)
-		totalQueries := 0
-		for _, n := range r.queriesByType {
-			totalQueries += n
-		}
 		if secs := span.Seconds(); secs > 0 {
-			fmt.Fprintf(out, "avg queries/sec  . . . . %.2f\n", float64(totalQueries)/secs)
+			// Rate over CLIENT queries (upstream leg excluded) — what the reader wants.
+			fmt.Fprintf(out, "avg client queries/sec . %.2f\n", float64(r.clientQueries)/secs)
 		}
 	}
 	fmt.Fprintf(out, "\ndedup preview: %d events -> %d distinct (client,qname,answer) triples\n",
@@ -335,6 +389,7 @@ type DnsEvent struct {
 	QType      string
 	AnswerIP   string
 	TTL        uint32
+	TTLUnknown bool
 }
 
 func normalizeHost(host string) string {
@@ -394,16 +449,17 @@ func (p *tcpdumpDNSParser) feed(line string) ([]DnsEvent, error) {
 	}
 	tod, ok := parseTOD(tok)
 	if !ok {
+		p.pending = false // stale pending must not pair with a later payload
 		return nil, nil
 	}
 
-	if p.havePrev && p.prevTOD-tod > time.Hour {
+	if p.havePrev && p.prevTOD-tod > 12*time.Hour {
 		p.baseDate = p.baseDate.AddDate(0, 0, 1)
 	}
 	p.prevTOD = tod
 	p.havePrev = true
 
-	if strings.Contains(line, "proto UDP") {
+	if strings.Contains(line, "proto UDP") || strings.Contains(line, "next-header UDP") {
 		p.pending = true
 		p.pendingTime = p.baseDate.Add(tod)
 	} else {
@@ -434,8 +490,15 @@ func (p *tcpdumpDNSParser) parsePayload(s string, ts time.Time) ([]DnsEvent, err
 
 	var clientIP string
 	var clientPort uint16
-	isQuery := false
+	var isQuery bool
 	switch {
+	case dstPort == 53 && srcPort == 53:
+		isQuery = payloadHasQueryMarker(payload)
+		if isQuery {
+			clientIP, clientPort = srcIP, srcPort
+		} else {
+			clientIP, clientPort = dstIP, dstPort
+		}
 	case dstPort == 53:
 		isQuery = true
 		clientIP, clientPort = srcIP, srcPort
@@ -453,6 +516,15 @@ func (p *tcpdumpDNSParser) parsePayload(s string, ts time.Time) ([]DnsEvent, err
 		return parseTcpdumpQuery(payload, ts, clientIP, clientPort)
 	}
 	return parseTcpdumpResponse(payload, ts, clientIP, clientPort)
+}
+
+func payloadHasQueryMarker(payload string) bool {
+	for _, f := range strings.Fields(payload) {
+		if strings.HasSuffix(f, "?") {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTcpdumpQuery(payload string, ts time.Time, clientIP string, clientPort uint16) ([]DnsEvent, error) {
@@ -533,6 +605,7 @@ func parseTcpdumpResponse(payload string, ts time.Time, clientIP string, clientP
 			QName:      qname,
 			QType:      typ,
 			AnswerIP:   fset[2],
+			TTLUnknown: true,
 		})
 	}
 	if len(events) == 0 {
