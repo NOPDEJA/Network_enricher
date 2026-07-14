@@ -32,6 +32,7 @@ Before implementing:
 - If multiple interpretations exist, pick the most conservative and say which you chose.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is genuinely ambiguous (e.g. field naming, enricher ordering), name it and make a call.
+- **Scale the asking bar to the cost of being wrong.** For inline edits, a wrong assumption is cheap to correct — just proceed. But *before delegating to `engineer`*, resolve any load-bearing ambiguity with the user first (use `AskUserQuestion`): a wrong delegation burns a whole Opus implementation cycle, so one clarifying question is the cheaper path.
 
 ---
 
@@ -140,6 +141,14 @@ The main session acts as **tech lead**: discuss the problem with the user, decid
 - **`chores`** (Haiku, `.claude/agents/chores.md`) — repetitive mechanical work (bulk renames, gofmt sweeps, boilerplate from an explicit pattern).
 
 Lead responsibilities: don't delegate design decisions; review subagent output before presenting it to the user; for nontrivial changes, route the engineer's diff through `codex` before calling it done. Trivial one-file edits: just do them inline — spawning costs more than it saves.
+
+**Delegation handoff — the hidden token cost of delegating is the engineer re-discovering context you already have.** Each agent starts cold, so hand it, not the problem:
+- the *decided approach* (you already solved the design — don't make it re-derive one)
+- the exact files + entry points to touch (paths, function/type names)
+- explicit success criteria: what to build, and what command proves it works
+- only the CLAUDE.md constraints that actually bear on this task
+
+A crisp handoff turns a multi-turn exploration into a single focused pass. If you can't write one, the task isn't ready to delegate — clarify it first (see §1).
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: perf-check
-description: Run the enricher's micro-benchmarks (and optionally an end-to-end throughput check) and compare results against the baselines documented in README.md to catch performance regressions. Use when the user asks to check for perf regressions, benchmark the enricher, verify throughput, or before merging a change that touches the hot path (enrich, dedup, batchwriter, Kafka reader).
+description: Run the enricher's micro-benchmarks (optionally an end-to-end throughput check) and diff them against the README.md baselines to catch performance regressions. Use before merging hot-path changes (enrich, dedup, batchwriter, Kafka reader), or when asked to benchmark or verify throughput.
 ---
 
 # Enricher perf-check
