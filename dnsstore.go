@@ -337,7 +337,13 @@ func (s *DNSStore) scan() {
 			slog.Error("dns: scan panicked, recovered", "panic", r)
 		}
 	}()
-	scanAppendedDir(s.dnsDir, sourceDNS, s.offsets, s.ingestDNS)
+	// On rotation/truncation the file is re-fed from offset 0, so the retained
+	// stateful parser for that path must be discarded with it: a block left
+	// pending from the old content would otherwise flush into the new stream
+	// (stale-event leak). ingestDNS recreates the parser on the next line.
+	scanAppendedDir(s.dnsDir, sourceDNS, s.offsets, s.ingestDNS, func(path string) {
+		delete(s.parsers, path)
+	})
 	if s.ch != nil {
 		s.ch.flush()
 	}

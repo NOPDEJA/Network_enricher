@@ -20,10 +20,14 @@ const maxScanReadBytes = 8 << 20 // 8 MB
 // scans and is owned by the single poller goroutine that calls this (no lock).
 // source is used only for log context. handle receives the file path alongside
 // each line so a stateful per-file parser can keep files separate (the DNS
-// tcpdump parser needs this); line-stateless callers ignore path. It never
+// tcpdump parser needs this); line-stateless callers ignore path. onTruncate,
+// if non-nil, fires when a file is detected rotated/truncated (size < offset)
+// BEFORE its content is re-fed from the start — a caller holding stateful
+// per-file parsers must discard that file's parser there, or a block left
+// pending from the old content could flush into the new stream. It never
 // recovers panics — the caller's scan() owns the recover so a bad line is
 // counted, not silently fatal.
-func scanAppendedDir(dir, source string, offsets map[string]int64, handle func(path, line string)) {
+func scanAppendedDir(dir, source string, offsets map[string]int64, handle func(path, line string), onTruncate func(path string)) {
 	if dir == "" {
 		return
 	}
@@ -36,16 +40,18 @@ func scanAppendedDir(dir, source string, offsets map[string]int64, handle func(p
 		if entry.IsDir() {
 			continue
 		}
-		readAppendedFile(filepath.Join(dir, entry.Name()), source, offsets, handle)
+		readAppendedFile(filepath.Join(dir, entry.Name()), source, offsets, handle, onTruncate)
 	}
 }
 
 // readAppendedFile reads the bytes added to one file since the last scan and
 // feeds only complete lines to handle (a trailing partial line is held back for
 // the next scan). A file smaller than its stored offset was rotated/truncated,
-// so it is re-read from 0. The read is bounded by maxScanReadBytes; the offset
-// advances only past the last complete line so the next scan continues cleanly.
-func readAppendedFile(path, source string, offsets map[string]int64, handle func(path, line string)) {
+// so it is re-read from 0 after notifying onTruncate (if non-nil) so stateful
+// per-file parser state from the old content is discarded first. The read is
+// bounded by maxScanReadBytes; the offset advances only past the last complete
+// line so the next scan continues cleanly.
+func readAppendedFile(path, source string, offsets map[string]int64, handle func(path, line string), onTruncate func(path string)) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return
@@ -54,6 +60,9 @@ func readAppendedFile(path, source string, offsets map[string]int64, handle func
 	off := offsets[path]
 	if size < off {
 		off = 0 // rotation or truncation: start over
+		if onTruncate != nil {
+			onTruncate(path)
+		}
 	}
 	if size == off {
 		return

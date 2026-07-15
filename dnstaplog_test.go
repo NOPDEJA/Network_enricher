@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -294,4 +295,67 @@ func TestDnstapSynthetic(t *testing.T) {
 			t.Errorf("AnswerIP = %q, want empty (v4 literal on AAAA must be skipped)", got[0].AnswerIP)
 		}
 	})
+}
+
+// A rotated/truncated file is re-fed from offset 0 through a FRESH parser: the
+// scan path must discard the retained per-file parser (dnsstore's onTruncate),
+// or a block left pending from the old content — here the second, unterminated
+// block — would flush its stale events into the new stream when the new file's
+// first col-0 `type:` line arrives.
+func TestDnstapTruncationDiscardsPendingBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dnstap.yaml")
+
+	block := func(client, port, qname, answerIP, stamp string, terminated bool) string {
+		s := "type: MESSAGE\n" +
+			"identity: test\n" +
+			"version: BIND 9.20.24\n" +
+			"message:\n" +
+			"  type: CLIENT_RESPONSE\n" +
+			"  response_time: !!timestamp " + stamp + "\n" +
+			"  query_address: \"" + client + "\"\n" +
+			"  query_port: " + port + "\n" +
+			"  response_message_data:\n" +
+			"    status: NOERROR\n" +
+			"    QUESTION_SECTION:\n" +
+			"      - '" + qname + ". IN A'\n" +
+			"    ANSWER_SECTION:\n" +
+			"      - '" + qname + ". 3600 IN A " + answerIP + "'\n"
+		if terminated {
+			s += "---\n"
+		}
+		return s
+	}
+
+	// v1: one complete block, then one left pending (no `---` yet). Timestamps in
+	// the far future so the live-map deadlines outlast the test's real clock.
+	v1 := block("10.0.0.1", "40001", "old.example", "1.1.1.1", "2030-01-01T00:00:00Z", true) +
+		block("10.0.0.2", "40002", "stale.example", "9.9.9.9", "2030-01-01T00:00:05Z", false)
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDNSStoreDnstap(dir, nil, nil)
+	s.scan()
+	if got := s.Lookup("10.0.0.1", "1.1.1.1"); got != "old.example" {
+		t.Fatalf("after scan 1: Lookup(10.0.0.1) = %q, want old.example", got)
+	}
+
+	// v2 REPLACES the file with shorter content (rotation): a single fresh block.
+	v2 := block("10.0.0.3", "40003", "new.example", "8.8.8.8", "2030-01-01T00:01:00Z", true)
+	if len(v2) >= len(v1) {
+		t.Fatalf("test setup: v2 (%d bytes) must be shorter than v1 (%d bytes) to trip truncation", len(v2), len(v1))
+	}
+	if err := os.WriteFile(path, []byte(v2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.scan()
+
+	if got := s.Lookup("10.0.0.3", "8.8.8.8"); got != "new.example" {
+		t.Fatalf("after scan 2: Lookup(10.0.0.3) = %q, want new.example", got)
+	}
+	// The old file's pending block must have been discarded with its parser: its
+	// events must never reach the store.
+	if got := s.Lookup("10.0.0.2", "9.9.9.9"); got != "" {
+		t.Fatalf("after scan 2: stale pending block leaked into the store: Lookup(10.0.0.2) = %q, want \"\"", got)
+	}
 }

@@ -56,9 +56,9 @@ Built for campus-WiFi legal forensics (MUIC use case): given a timestamp and an 
 ### DNS — BIND9 resolver logs ("what")
 - **Why:** one CDN IP serves thousands of sites; the DNS query is the only network-level record of the actual hostname. Correlation is **per-client**: `(clientIP, answeredIP) → hostname`, so one client's resolution never labels another client's flows.
 - **`DNSStore`:** live map with entries valid for the record TTL bounded to [60s, 1h]; hard-capped at ~1M entries (client×dst cardinality can explode) with expired-first-then-oldest eviction — victim selection runs under `RLock` so hot-path lookups are never stalled (single-mutator invariant: only the poller writes). Hostnames are *not* personal data in this design and stay in the clear.
-- **Parser:** standard BIND9 querylog lines (no answer data) plus a response-line variant *modeled* on RFC 1035 presentation form — pending re-validation against a real dnstap sample. The client source port is captured as the per-line dedup discriminator.
+- **Parsers (`DNS_LOG_FORMAT`):** three formats, one event contract. `bind` — BIND9 querylog lines (query-only; its modeled one-line response variant never occurs in real BIND output and survives only for compatibility). `tcpdump` — stateful two-line `tcpdump -v` text, the real MUIC capture format (answers but no TTLs → fixed 10-minute validity horizon). `dnstap` — stateful multi-line `dnstap-read -y` YAML blocks produced by the `dnstap-export` compose sidecar from BIND's binary dnstap stream; the only source carrying **real answer TTLs**, and its timestamps carry an explicit zone so `DNS_LOG_TZ` does not apply. All three capture the client source port as the per-line dedup discriminator.
 - **Flow tagging:** `src_hostname`/`dst_hostname`, both orientations (src-as-client tags dst_hostname; dst-as-client tags src_hostname).
-- **Gating:** `DNS_LOG_DIR`.
+- **Gating:** `DNS_LOG_DIR` + `DNS_LOG_FORMAT=bind|tcpdump|dnstap` (default `bind`; the tcpdump format adds `DNS_TCPDUMP_DATE`/`DNS_TCPDUMP_RESOLVER_IP` for capture replay).
 
 ### Shared machinery
 - **Event tables:** `identity_dhcp_events`, `identity_radius_events`, `dns_events` — `ReplacingMergeTree` with fully-identifying `ORDER BY` keys, so restart/replay re-ingestion deduplicates instead of double-counting; 90d TTL matching `flows`.

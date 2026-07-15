@@ -91,7 +91,7 @@ services:
         done
     volumes:
       - bind9-log:/var/log/bind:ro
-      - .\bind\export:/export
+      - ./bind/export:/export
     depends_on:
       - bind9
     restart: on-failure
