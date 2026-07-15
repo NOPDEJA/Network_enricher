@@ -350,8 +350,14 @@ func main() {
 			dns = NewDNSStoreTcpdump(dnsDir, dnsLoc, baseDate, resolverIP, conn)
 			slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "format", format,
 				"date", baseDate.Format("2006-01-02"), "resolver_ip", resolverIP, "clickhouse", conn != nil)
+		case "dnstap":
+			// dnstap-read -y YAML: no extra knobs — the timestamps carry an explicit
+			// zone (so no date anchor) and the CLIENT/FORWARDER kind gate is the
+			// upstream-leg filter (so no resolver IP).
+			dns = NewDNSStoreDnstap(dnsDir, dnsLoc, conn)
+			slog.Info("dns enrichment enabled", "dns_dir", dnsDir, "format", format, "clickhouse", conn != nil)
 		default:
-			slog.Error("dns: invalid DNS_LOG_FORMAT (want bind or tcpdump)", "value", format)
+			slog.Error("dns: invalid DNS_LOG_FORMAT (want bind, tcpdump or dnstap)", "value", format)
 			os.Exit(1)
 		}
 		dns.StartPoller(ctx)

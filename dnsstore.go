@@ -125,6 +125,21 @@ func NewDNSStoreTcpdump(dnsDir string, dnsLoc *time.Location, baseDate time.Time
 	return s
 }
 
+// NewDNSStoreDnstap builds a store that ingests `dnstap-read -y` YAML text (BIND's
+// binary response log, converted by the dnstap-export sidecar) instead of BIND
+// resolver logs. It reuses NewDNSStore's map/eviction/persistence and only swaps
+// the parse function for the stateful multi-line dnstap parser. dnsLoc is accepted
+// for signature parity with the other constructors but IGNORED by the parser: the
+// dnstap YAML timestamps carry an explicit zone (RFC3339 Z), so there is nothing
+// to interpret.
+func NewDNSStoreDnstap(dnsDir string, dnsLoc *time.Location, conn driver.Conn) *DNSStore {
+	s := NewDNSStore(dnsDir, dnsLoc, conn)
+	s.newParser = func() func(line string) ([]DnsEvent, error) {
+		return newDnstapDNSParser().feed
+	}
+	return s
+}
+
 // Lookup resolves (clientIP, answeredIP) to the hostname the client last saw
 // for that address. Flow hot-path: one RLock, one map read, no I/O and no
 // allocation. An expired entry reads as absent, so a stale mapping never tags a
@@ -322,7 +337,13 @@ func (s *DNSStore) scan() {
 			slog.Error("dns: scan panicked, recovered", "panic", r)
 		}
 	}()
-	scanAppendedDir(s.dnsDir, sourceDNS, s.offsets, s.ingestDNS)
+	// On rotation/truncation the file is re-fed from offset 0, so the retained
+	// stateful parser for that path must be discarded with it: a block left
+	// pending from the old content would otherwise flush into the new stream
+	// (stale-event leak). ingestDNS recreates the parser on the next line.
+	scanAppendedDir(s.dnsDir, sourceDNS, s.offsets, s.ingestDNS, func(path string) {
+		delete(s.parsers, path)
+	})
 	if s.ch != nil {
 		s.ch.flush()
 	}

@@ -275,13 +275,15 @@ const (
 // scanDir tails one identity log directory using the shared incremental-scan
 // core (see filepoller.go), routing each line to the matching parser.
 func (s *IdentityStore) scanDir(dir, source string) {
+	// nil onTruncate: the identity parsers are line-stateless, so a truncated
+	// file simply re-feeds from 0 with nothing to discard.
 	scanAppendedDir(dir, source, s.offsets, func(_, line string) {
 		if source == sourceNPS {
 			s.ingestNPS(line)
 		} else {
 			s.ingestDHCP(line)
 		}
-	})
+	}, nil)
 }
 
 func (s *IdentityStore) ingestNPS(line string) {

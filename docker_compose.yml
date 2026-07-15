@@ -66,6 +66,36 @@ services:
       - bind9-log:/var/log/bind
     restart: on-failure
 
+  dnstap-export:
+    # Same image as bind9 — it ships dnstap-read, which converts BIND's binary
+    # dnstap stream to the YAML text the enricher's dnstap parser ingests.
+    image: internetsystemsconsortium/bind9:9.20
+    # Re-convert the whole dnstap.bin every 15s to /export/dnstap.yaml. dnstap.bin
+    # is append-only and dnstap-read is deterministic, so the output PREFIX is
+    # byte-identical each pass — the enricher's file poller reads only the appended
+    # tail. Writing via .work/*.tmp + same-filesystem mv is atomic, and .work/ (a
+    # subdir) stays invisible to the poller since scanAppendedDir skips dirs. On
+    # BIND's 100m dnstap rotation the output shrinks and readAppendedFile re-reads
+    # from offset 0 (ReplacingMergeTree absorbs the overlap).
+    #
+    # Accepted limitation: full re-conversion of up to ~100MB per cycle is fine at
+    # lab scale; a live fstrm-socket consumer is the future fix.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /export/.work
+        while true; do
+          [ -f /var/log/bind/dnstap.bin ] && dnstap-read -y /var/log/bind/dnstap.bin > /export/.work/dnstap.yaml.tmp && mv /export/.work/dnstap.yaml.tmp /export/dnstap.yaml
+          sleep 15
+        done
+    volumes:
+      - bind9-log:/var/log/bind:ro
+      - ./bind/export:/export
+    depends_on:
+      - bind9
+    restart: on-failure
+
   grafana:
     image: grafana/grafana:latest
     ports:

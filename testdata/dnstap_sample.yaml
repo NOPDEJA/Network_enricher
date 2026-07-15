@@ -1,0 +1,1348 @@
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T03:46:30Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 48626
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 50752
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 94095b11682a8193
+    QUESTION_SECTION:
+      - 'www.google.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  50752
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 94095b11682a8193
+    ;; QUESTION SECTION:
+    ;www.google.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T03:46:30Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 37633
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 55624
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'www.google.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  55624
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;www.google.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T03:46:30Z
+  message_size: 171b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 37633
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 55624
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 8
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'www.google.com. IN A'
+    ANSWER_SECTION:
+      - 'www.google.com. 215 IN A 142.251.156.119'
+      - 'www.google.com. 215 IN A 142.251.151.119'
+      - 'www.google.com. 215 IN A 142.251.157.119'
+      - 'www.google.com. 215 IN A 142.251.153.119'
+      - 'www.google.com. 215 IN A 142.251.152.119'
+      - 'www.google.com. 215 IN A 142.251.155.119'
+      - 'www.google.com. 215 IN A 142.251.150.119'
+      - 'www.google.com. 215 IN A 142.251.154.119'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  55624
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 8, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;www.google.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    www.google.com.		215	IN	A	142.251.156.119
+    www.google.com.		215	IN	A	142.251.151.119
+    www.google.com.		215	IN	A	142.251.157.119
+    www.google.com.		215	IN	A	142.251.153.119
+    www.google.com.		215	IN	A	142.251.152.119
+    www.google.com.		215	IN	A	142.251.155.119
+    www.google.com.		215	IN	A	142.251.150.119
+    www.google.com.		215	IN	A	142.251.154.119
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T03:46:30Z
+  message_size: 199b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 48626
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 50752
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 8
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 94095b11682a8193
+          SERVER: 010000006a5702966a2ec7992706aaa7
+    QUESTION_SECTION:
+      - 'www.google.com. IN A'
+    ANSWER_SECTION:
+      - 'www.google.com. 215 IN A 142.251.151.119'
+      - 'www.google.com. 215 IN A 142.251.153.119'
+      - 'www.google.com. 215 IN A 142.251.155.119'
+      - 'www.google.com. 215 IN A 142.251.150.119'
+      - 'www.google.com. 215 IN A 142.251.152.119'
+      - 'www.google.com. 215 IN A 142.251.154.119'
+      - 'www.google.com. 215 IN A 142.251.157.119'
+      - 'www.google.com. 215 IN A 142.251.156.119'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  50752
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 8, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 94095b11682a8193010000006a5702966a2ec7992706aaa7
+    ;; QUESTION SECTION:
+    ;www.google.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    www.google.com.		215	IN	A	142.251.151.119
+    www.google.com.		215	IN	A	142.251.153.119
+    www.google.com.		215	IN	A	142.251.155.119
+    www.google.com.		215	IN	A	142.251.150.119
+    www.google.com.		215	IN	A	142.251.152.119
+    www.google.com.		215	IN	A	142.251.154.119
+    www.google.com.		215	IN	A	142.251.157.119
+    www.google.com.		215	IN	A	142.251.156.119
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 61b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 38354
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 25083
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 42aeb623759bbe77
+    QUESTION_SECTION:
+      - '8.8.8.8.in-addr.arpa. IN PTR'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  25083
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 42aeb623759bbe77
+    ;; QUESTION SECTION:
+    ;8.8.8.8.in-addr.arpa.		IN	PTR
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 42201
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 3751
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: af55d4ebdb1b66c6
+    QUESTION_SECTION:
+      - 'google.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:   3751
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: af55d4ebdb1b66c6
+    ;; QUESTION SECTION:
+    ;google.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 58971
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 2669
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: fc8f87b255244520
+    QUESTION_SECTION:
+      - 'google.com. IN AAAA'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:   2669
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: fc8f87b255244520
+    ;; QUESTION SECTION:
+    ;google.com.			IN	AAAA
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 68b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 40823
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 15056
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 6ac1b3fb0d7c3f4a
+    QUESTION_SECTION:
+      - 'dnstap-fixture-test.invalid. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  15056
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 6ac1b3fb0d7c3f4a
+    ;; QUESTION SECTION:
+    ;dnstap-fixture-test.invalid.	IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 61b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 51688
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 11046
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - '8.8.8.8.in-addr.arpa. IN PTR'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  11046
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;8.8.8.8.in-addr.arpa.		IN	PTR
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 48338
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 37279
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'google.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  37279
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;google.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 47039
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 50630
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'google.com. IN AAAA'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  50630
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;google.com.			IN	AAAA
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 68b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 49947
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 27710
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'dnstap-fixture-test.invalid. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  27710
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;dnstap-fixture-test.invalid.	IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 73b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 51688
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 11046
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - '8.8.8.8.in-addr.arpa. IN PTR'
+    ANSWER_SECTION:
+      - '8.8.8.8.in-addr.arpa. 85906 IN PTR dns.google.'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  11046
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;8.8.8.8.in-addr.arpa.		IN	PTR
+    
+    ;; ANSWER SECTION:
+    8.8.8.8.in-addr.arpa.	85906	IN	PTR	dns.google.
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 48338
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 37279
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'google.com. IN A'
+    ANSWER_SECTION:
+      - 'google.com. 49 IN A 142.250.66.110'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  37279
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;google.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    google.com.		49	IN	A	142.250.66.110
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 67b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 47039
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 50630
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'google.com. IN AAAA'
+    ANSWER_SECTION:
+      - 'google.com. 28 IN AAAA 2404:6800:4016:808::200e'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  50630
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;google.com.			IN	AAAA
+    
+    ;; ANSWER SECTION:
+    google.com.		28	IN	AAAA	2404:6800:4016:808::200e
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 1055b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 49947
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NXDOMAIN
+    id: 27710
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 6
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'dnstap-fixture-test.invalid. IN A'
+    AUTHORITY_SECTION:
+      - '. 86400 IN SOA a.root-servers.net. nstld.verisign-grs.com. 2026071403 1800 900 604800 86400'
+      - '. 86400 IN RRSIG SOA 8 0 86400 20260727210000 20260714200000 57780 . L0mQKA6UFbhtbbCGE5RhQjjhzX7Tiq2yhj7TuZPU41HLOoGdZT9yLJET rp/JERLayZxmKYJDOI38NRC3q0AAbMNfnhj7xEN1qDaLNGXQeSAaP+s9 ZPv0FAfdN28iSmP/2WKpUGZZvz3LItOEpJREq4PCH8QmEUxvM8c5dncv O3JQ+BiX40MK+TYR5x/z1CRbbRQHajZTQJYte6jh9VzeE1QTOI9XlcQV e4zzmnDabyLqfTBvHNRd/h9dQfv3WfdRnyd1GRH252Pow4XcDqBpxY/l wXmUfI2tVL9g/ykChzWUDrawJVPvEYVmdLn1Qhy670ZOLkfBvHmATWEl BhWpww=='
+      - '. 86400 IN NSEC aaa. NS SOA RRSIG NSEC DNSKEY ZONEMD'
+      - '. 86400 IN RRSIG NSEC 8 0 86400 20260727210000 20260714200000 57780 . 0wM/txfIsEqN5DAqm+UVwYKUaaeINmpdPLlTo5wyczLzmubT67KMwTQ1 NWBBMBnWoHuOmpMPDR8U2vcGA6BepdzwcmXjk2GWxuAypyNS1/VNTuIc yqfm37EUTZAg3b7QQWGde6hpAx6EpC/CmCuQ0xwi4SbWMzoQ4Bk2jAPP h4pPbu04Yite/dIrA0RYjPBmDUq/sVdfpvULymY+MQuhtnI0UDyXs5ay 706NltxKNnSooVyu7mL2QPs4Gf8HXtEBsJI4qxhCix6ko0RyoUgD0mc3 L37xKBk6tewysVsvuty9REGBTfcCIA7cSn9g2D8tPHbTFimBDKGtbfjo zF+3bA=='
+      - 'intuit. 86400 IN NSEC investments. NS DS RRSIG NSEC'
+      - 'intuit. 86400 IN RRSIG NSEC 8 1 86400 20260727210000 20260714200000 57780 . IzbyJEaDkBp2yUgpi679S77b290xLUlliFqyCRDSHXr4vbwfNvcAHxMD f2ONnhZdG/ji0niPgnmINLfSATQe+DotaODQp/L3Y3CkHdVmQTuZGCaw Zlu/WJR7q1C/v4a4V6cG7uwvOm/zueqsIwnYR70OpLa5BFnF+RIPe1rL mb+vRY/zmnJzvXHcrrRMnK8J/XUlPRLtyPfTjxeLTWGxLHvt31vu+vp9 6F/EyuuFaXHI4pGHQmgOmIEOmkXjxYBxXQQ1rqI2XZxS5pCNNYFJ31s0 Kiu8nyncTy1thNSKa0PRmp42vkwEJZpMEDnOA69XSoDwkgYvn7D9yZEO nv44YQ=='
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id:  27710
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 6, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;dnstap-fixture-test.invalid.	IN	A
+    
+    ;; AUTHORITY SECTION:
+    .			86400	IN	SOA	a.root-servers.net. nstld.verisign-grs.com. 2026071403 1800 900 604800 86400
+    .			86400	IN	RRSIG	SOA 8 0 86400 20260727210000 20260714200000 57780 . L0mQKA6UFbhtbbCGE5RhQjjhzX7Tiq2yhj7TuZPU41HLOoGdZT9yLJET rp/JERLayZxmKYJDOI38NRC3q0AAbMNfnhj7xEN1qDaLNGXQeSAaP+s9 ZPv0FAfdN28iSmP/2WKpUGZZvz3LItOEpJREq4PCH8QmEUxvM8c5dncv O3JQ+BiX40MK+TYR5x/z1CRbbRQHajZTQJYte6jh9VzeE1QTOI9XlcQV e4zzmnDabyLqfTBvHNRd/h9dQfv3WfdRnyd1GRH252Pow4XcDqBpxY/l wXmUfI2tVL9g/ykChzWUDrawJVPvEYVmdLn1Qhy670ZOLkfBvHmATWEl BhWpww==
+    .			86400	IN	NSEC	aaa. NS SOA RRSIG NSEC DNSKEY ZONEMD
+    .			86400	IN	RRSIG	NSEC 8 0 86400 20260727210000 20260714200000 57780 . 0wM/txfIsEqN5DAqm+UVwYKUaaeINmpdPLlTo5wyczLzmubT67KMwTQ1 NWBBMBnWoHuOmpMPDR8U2vcGA6BepdzwcmXjk2GWxuAypyNS1/VNTuIc yqfm37EUTZAg3b7QQWGde6hpAx6EpC/CmCuQ0xwi4SbWMzoQ4Bk2jAPP h4pPbu04Yite/dIrA0RYjPBmDUq/sVdfpvULymY+MQuhtnI0UDyXs5ay 706NltxKNnSooVyu7mL2QPs4Gf8HXtEBsJI4qxhCix6ko0RyoUgD0mc3 L37xKBk6tewysVsvuty9REGBTfcCIA7cSn9g2D8tPHbTFimBDKGtbfjo zF+3bA==
+    intuit.			86400	IN	NSEC	investments. NS DS RRSIG NSEC
+    intuit.			86400	IN	RRSIG	NSEC 8 1 86400 20260727210000 20260714200000 57780 . IzbyJEaDkBp2yUgpi679S77b290xLUlliFqyCRDSHXr4vbwfNvcAHxMD f2ONnhZdG/ji0niPgnmINLfSATQe+DotaODQp/L3Y3CkHdVmQTuZGCaw Zlu/WJR7q1C/v4a4V6cG7uwvOm/zueqsIwnYR70OpLa5BFnF+RIPe1rL mb+vRY/zmnJzvXHcrrRMnK8J/XUlPRLtyPfTjxeLTWGxLHvt31vu+vp9 6F/EyuuFaXHI4pGHQmgOmIEOmkXjxYBxXQQ1rqI2XZxS5pCNNYFJ31s0 Kiu8nyncTy1thNSKa0PRmp42vkwEJZpMEDnOA69XSoDwkgYvn7D9yZEO nv44YQ==
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 101b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 38354
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 25083
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 42aeb623759bbe77
+          SERVER: 010000006a57480e9dd7cf4a25e457be
+    QUESTION_SECTION:
+      - '8.8.8.8.in-addr.arpa. IN PTR'
+    ANSWER_SECTION:
+      - '8.8.8.8.in-addr.arpa. 85906 IN PTR dns.google.'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  25083
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 42aeb623759bbe77010000006a57480e9dd7cf4a25e457be
+    ;; QUESTION SECTION:
+    ;8.8.8.8.in-addr.arpa.		IN	PTR
+    
+    ;; ANSWER SECTION:
+    8.8.8.8.in-addr.arpa.	85906	IN	PTR	dns.google.
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 83b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 42201
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 3751
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: af55d4ebdb1b66c6
+          SERVER: 010000006a57480e8cb50b7c51f7ba24
+    QUESTION_SECTION:
+      - 'google.com. IN A'
+    ANSWER_SECTION:
+      - 'google.com. 49 IN A 142.250.66.110'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:   3751
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: af55d4ebdb1b66c6010000006a57480e8cb50b7c51f7ba24
+    ;; QUESTION SECTION:
+    ;google.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    google.com.		49	IN	A	142.250.66.110
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 95b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 58971
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 2669
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: fc8f87b255244520
+          SERVER: 010000006a57480e466f9d1665ca72a9
+    QUESTION_SECTION:
+      - 'google.com. IN AAAA'
+    ANSWER_SECTION:
+      - 'google.com. 28 IN AAAA 2404:6800:4016:808::200e'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:   2669
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: fc8f87b255244520010000006a57480e466f9d1665ca72a9
+    ;; QUESTION SECTION:
+    ;google.com.			IN	AAAA
+    
+    ;; ANSWER SECTION:
+    google.com.		28	IN	AAAA	2404:6800:4016:808::200e
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 159b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 40823
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NXDOMAIN
+    id: 15056
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 1
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 6ac1b3fb0d7c3f4a
+          SERVER: 010000006a57480ea115482be90c76b2
+    QUESTION_SECTION:
+      - 'dnstap-fixture-test.invalid. IN A'
+    AUTHORITY_SECTION:
+      - '. 10800 IN SOA a.root-servers.net. nstld.verisign-grs.com. 2026071403 1800 900 604800 86400'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id:  15056
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 6ac1b3fb0d7c3f4a010000006a57480ea115482be90c76b2
+    ;; QUESTION SECTION:
+    ;dnstap-fixture-test.invalid.	IN	A
+    
+    ;; AUTHORITY SECTION:
+    .			10800	IN	SOA	a.root-servers.net. nstld.verisign-grs.com. 2026071403 1800 900 604800 86400
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 40481
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 58190
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 56ea94522391b733
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  58190
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 56ea94522391b733
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 48822
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 22685
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  22685
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 73b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 48822
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 22685
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 2
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+    ANSWER_SECTION:
+      - 'www.github.com. 3600 IN CNAME github.com.'
+      - 'github.com. 60 IN A 20.205.243.166'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  22685
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    www.github.com.		3600	IN	CNAME	github.com.
+    github.com.		60	IN	A	20.205.243.166
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 56367
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 39452
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'github.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  39452
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;github.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 56367
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 39452
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'github.com. IN A'
+    ANSWER_SECTION:
+      - 'github.com. 49 IN A 20.205.243.166'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  39452
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;github.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    github.com.		49	IN	A	20.205.243.166
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:42:54Z
+  message_size: 101b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 40481
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 58190
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 2
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: 56ea94522391b733
+          SERVER: 010000006a57480e2b7eba4eaa5a5988
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+    ANSWER_SECTION:
+      - 'www.github.com. 3600 IN CNAME github.com.'
+      - 'github.com. 49 IN A 20.205.243.166'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  58190
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: 56ea94522391b733010000006a57480e2b7eba4eaa5a5988
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    www.github.com.		3600	IN	CNAME	github.com.
+    github.com.		49	IN	A	20.205.243.166
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_QUERY
+  query_time: !!timestamp 2026-07-15T08:45:20Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 41142
+  response_port: 53
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 19489
+    flags: rd ad
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: d298fe5be8970962
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  19489
+    ;; flags: rd ad    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: d298fe5be8970962
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_QUERY
+  query_time: !!timestamp 2026-07-15T08:45:20Z
+  message_size: 51b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 42577
+  response_port: 53
+  query_zone: .
+  query_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 46344
+    flags: rd cd
+    QUESTION: 1
+    ANSWER: 0
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+        COOKIE:
+          CLIENT: 7692bf7d7d567147
+    QUESTION_SECTION:
+      - 'github.com. IN A'
+  query_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  46344
+    ;; flags: rd cd    ; QUESTION: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ; COOKIE: 7692bf7d7d567147
+    ;; QUESTION SECTION:
+    ;github.com.			IN	A
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: FORWARDER_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:45:20Z
+  message_size: 55b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "0.0.0.0"
+  response_address: "1.1.1.1"
+  query_port: 42577
+  response_port: 53
+  query_zone: .
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 46344
+    flags: qr rd ra cd
+    QUESTION: 1
+    ANSWER: 1
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags: do
+        udp: 1232
+    QUESTION_SECTION:
+      - 'github.com. IN A'
+    ANSWER_SECTION:
+      - 'github.com. 23 IN A 20.205.243.166'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  46344
+    ;; flags: qr rd ra cd    ; QUESTION: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags: do; udp: 1232
+    ;; QUESTION SECTION:
+    ;github.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    github.com.		23	IN	A	20.205.243.166
+    
+---
+type: MESSAGE
+identity: Nop-laptop
+version: BIND 9.20.24
+message:
+  type: CLIENT_RESPONSE
+  response_time: !!timestamp 2026-07-15T08:45:20Z
+  message_size: 101b
+  socket_family: INET
+  socket_protocol: UDP
+  query_address: "127.0.0.1"
+  response_address: "127.0.0.1"
+  query_port: 41142
+  response_port: 53
+  response_message_data:
+    opcode: QUERY
+    status: NOERROR
+    id: 19489
+    flags: qr rd ra
+    QUESTION: 1
+    ANSWER: 2
+    AUTHORITY: 0
+    ADDITIONAL: 1
+    OPT_PSEUDOSECTION:
+      EDNS:
+        version: 0
+        flags:
+        udp: 1232
+        COOKIE:
+          CLIENT: d298fe5be8970962
+          SERVER: 010000006a5748a061b63e959b1de7d4
+    QUESTION_SECTION:
+      - 'www.github.com. IN A'
+    ANSWER_SECTION:
+      - 'www.github.com. 3454 IN CNAME github.com.'
+      - 'github.com. 23 IN A 20.205.243.166'
+  response_message: |
+    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id:  19489
+    ;; flags: qr rd ra    ; QUESTION: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+    ;; OPT PSEUDOSECTION:
+    ; EDNS: version: 0, flags:; udp: 1232
+    ; COOKIE: d298fe5be8970962010000006a5748a061b63e959b1de7d4
+    ;; QUESTION SECTION:
+    ;www.github.com.			IN	A
+    
+    ;; ANSWER SECTION:
+    www.github.com.		3454	IN	CNAME	github.com.
+    github.com.		23	IN	A	20.205.243.166
+    
+---
