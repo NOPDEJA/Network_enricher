@@ -54,6 +54,16 @@ services:
       - goflow2
     restart: on-failure
 
+  bind9:
+    image: internetsystemsconsortium/bind9:9.20
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+    volumes:
+      - ./bind/named.conf:/etc/bind/named.conf:ro
+      - bind9-log:/var/log/named
+    restart: on-failure
+
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -78,3 +88,4 @@ services:
 volumes:
   clickhouse-data:
   grafana-data:
+  bind9-log:
