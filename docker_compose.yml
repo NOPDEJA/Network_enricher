@@ -63,7 +63,7 @@ services:
     network_mode: host
     volumes:
       - ./bind/named.conf:/etc/bind/named.conf:ro
-      - bind9-log:/var/log/named
+      - bind9-log:/var/log/bind
     restart: on-failure
 
   grafana:
