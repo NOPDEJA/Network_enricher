@@ -4,6 +4,10 @@
 geoip/
 .env
 
+# dnstap-export sidecar output (runtime DNS data; sensitive once campus clients
+# point at the box).
+bind/export/
+
 # Local-only: personal run script (contains infra IP + password).
 # Internal docs (HOW_IT_WORKS, LEARNING_PATH, scaling-plan, code-report) relocated
 # out of the repo to ../Network_Enricher_internal_docs.
