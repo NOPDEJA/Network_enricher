@@ -8,7 +8,26 @@
   "timezone": "utc",
   "title": "Network Enricher — Flows",
   "uid": "network-enricher",
-  "templating": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "name": "qname",
+        "label": "Forensic: domain",
+        "type": "textbox",
+        "query": "graph.facebook.com",
+        "current": { "text": "graph.facebook.com", "value": "graph.facebook.com" },
+        "options": [{ "text": "graph.facebook.com", "value": "graph.facebook.com", "selected": true }]
+      },
+      {
+        "name": "answer_ip",
+        "label": "Forensic: answered IP",
+        "type": "textbox",
+        "query": "57.145.18.141",
+        "current": { "text": "57.145.18.141", "value": "57.145.18.141" },
+        "options": [{ "text": "57.145.18.141", "value": "57.145.18.141", "selected": true }]
+      }
+    ]
+  },
   "refresh": "30s",
   "panels": [
     {
@@ -207,6 +226,151 @@
           "editorType": "sql",
           "queryType": "table",
           "rawSql": "SELECT tenant, sumIf(f, dir = 'out') AS outbound_flows, sumIf(b, dir = 'out') AS outbound_bytes, sumIf(f, dir = 'in') AS inbound_flows, sumIf(b, dir = 'in') AS inbound_bytes FROM (SELECT tenant_name AS tenant, 'out' AS dir, count() AS f, sum(bytes) AS b FROM flows WHERE $__timeFilter(timestamp) AND tenant_name != '' GROUP BY tenant UNION ALL SELECT dst_tenant_name AS tenant, 'in' AS dir, count() AS f, sum(bytes) AS b FROM flows WHERE $__timeFilter(timestamp) AND dst_tenant_name != '' GROUP BY tenant) GROUP BY tenant ORDER BY outbound_bytes + inbound_bytes DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "DNS events (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT count() AS events FROM dns_events WHERE $__timeFilter(event_time)"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Unique DNS clients (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 36 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(client_ip) AS clients FROM dns_events WHERE $__timeFilter(event_time)"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Unique domains (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 36 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(qname) AS domains FROM dns_events WHERE $__timeFilter(event_time)"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Unique answered IPs (range)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 36 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(answer_ip) AS answer_ips FROM dns_events WHERE $__timeFilter(event_time) AND answer_ip != ''"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "DNS events / sec",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1 }, "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfMinute(event_time) AS time, count() / 60 AS \"events/sec\" FROM dns_events WHERE $__timeFilter(event_time) GROUP BY time ORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "piechart",
+      "title": "DNS query type mix",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true }, "pieType": "donut", "legend": { "displayMode": "list", "placement": "right", "values": ["percent"] } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT qtype, count() AS events FROM dns_events WHERE $__timeFilter(event_time) GROUP BY qtype ORDER BY events DESC LIMIT 8"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "table",
+      "title": "Top domains (by stored events)",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT qname, count() AS events, uniqExact(client_ip) AS clients FROM dns_events WHERE $__timeFilter(event_time) GROUP BY qname ORDER BY events DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Forensic lookup: who resolved $qname → $answer_ip",
+      "description": "Set the two dashboard variables above (domain + answered IP), and this panel answers the legal-request scenario: which clients resolved that name to that IP, and when. Client IPs are internal RFC1918 addresses; identity-join returns pseudonymous tokens instead once wired in.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT client_ip, count() AS resolutions, min(event_time) AS first_seen, max(event_time) AS last_seen FROM dns_events WHERE $__timeFilter(event_time) AND qname = '${qname}' AND answer_ip = '${answer_ip}' GROUP BY client_ip ORDER BY resolutions DESC LIMIT 50"
         }
       ]
     }
