@@ -56,9 +56,11 @@ services:
 
   bind9:
     image: internetsystemsconsortium/bind9:9.20
-    ports:
-      - "53:53/udp"
-      - "53:53/tcp"
+    # Host networking: named binds each interface address individually, which
+    # coexists with systemd-resolved's 127.0.0.53 stub (a wildcard 0.0.0.0:53
+    # publish would conflict) and picks up new interface addresses on its own —
+    # campus clients will point at whatever IP the box holds.
+    network_mode: host
     volumes:
       - ./bind/named.conf:/etc/bind/named.conf:ro
       - bind9-log:/var/log/named
