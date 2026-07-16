@@ -1,0 +1,4 @@
+# Test fixtures are byte-exact parser inputs. With core.autocrlf=true a Windows
+# checkout rewrites them to CRLF, which breaks parsers that match exact line
+# endings (TestDnstapFixture: 13 events instead of 21). Always check out as LF.
+testdata/** text eol=lf
