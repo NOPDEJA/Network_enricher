@@ -204,21 +204,27 @@ WHERE event_time BETWEEN ? AND ?`)
 // buildDHCPQuery is who-mode query 2: every lease event for the candidate client
 // IPs, over a window widened back by maxLease so a lease that opened before the
 // DNS window still covers the resolution instant. FINAL is mandatory (ReplacingMergeTree).
+// The ORDER BY repeats the table's full ORDER BY (schema.sql): event_time is
+// second-resolution, so without the tie-breakers a same-second assign+release
+// pair could come back in either order and flip the reducer's outcome per run.
 func buildDHCPQuery(ips []string, from, to time.Time) (string, []any) {
 	const q = `SELECT event_time, event_id, ip, mac_token
 FROM identity_dhcp_events FINAL
 WHERE ip IN (?) AND event_time BETWEEN ? AND ?
-ORDER BY ip, event_time`
+ORDER BY ip, event_time, event_id, mac_token`
 	return q, []any{ips, from, to}
 }
 
 // buildRADIUSQuery is who-mode query 3: every accounting event for the candidate
 // mac_tokens, over a window widened back by maxSession. FINAL is mandatory.
+// Full-table ORDER BY for deterministic same-second ties, as in buildDHCPQuery
+// (lexicographic acct_status puts Stop after Start/Interim-Update, so a
+// same-second Start+Stop deterministically ends closed).
 func buildRADIUSQuery(macTokens []string, from, to time.Time) (string, []any) {
 	const q = `SELECT event_time, acct_status, session_id, user_token, mac_token
 FROM identity_radius_events FINAL
 WHERE mac_token IN (?) AND event_time BETWEEN ? AND ?
-ORDER BY mac_token, event_time`
+ORDER BY mac_token, event_time, session_id, acct_status`
 	return q, []any{macTokens, from, to}
 }
 

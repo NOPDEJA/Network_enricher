@@ -75,6 +75,19 @@ func TestDHCPBindingAt(t *testing.T) {
 			want: "",
 		},
 		{
+			// Same-second assign+release arrive in the query's deterministic
+			// order (ORDER BY ..., event_id): release (12) after assign (10),
+			// so the tie resolves to closed.
+			name: "same-second assign and release resolves to released",
+			events: []dhcpEvent{
+				{Time: tm(10, 20), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
+				{Time: tm(10, 20), EventID: 12, IP: "10.0.0.1", MACToken: "macA"},
+			},
+			ip:   "10.0.0.1",
+			at:   tm(10, 30),
+			want: "",
+		},
+		{
 			name: "release with mismatched MAC is ignored",
 			events: []dhcpEvent{
 				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
@@ -212,6 +225,19 @@ func TestRADIUSBindingAt(t *testing.T) {
 			name: "stop with matching session_id closes",
 			events: []radiusEvent{
 				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+			},
+			mac:  "macA",
+			at:   tm(10, 30),
+			want: "",
+		},
+		{
+			// Same-second Start+Stop arrive in the query's deterministic order
+			// (ORDER BY ..., acct_status): "Start" < "Stop" lexicographically,
+			// so the tie resolves to closed.
+			name: "same-second start and stop resolves to closed",
+			events: []radiusEvent{
+				{Time: tm(10, 20), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
 				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
 			},
 			mac:  "macA",

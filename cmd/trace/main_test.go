@@ -207,6 +207,9 @@ func TestBuildIdentityQueries(t *testing.T) {
 		if !strings.Contains(sql, "FROM identity_dhcp_events FINAL") || !strings.Contains(sql, "ip IN (?)") {
 			t.Fatalf("bad dhcp sql:\n%s", sql)
 		}
+		if !strings.Contains(sql, "ORDER BY ip, event_time, event_id, mac_token") {
+			t.Fatalf("dhcp ORDER BY must carry the schema tie-breakers for same-second determinism:\n%s", sql)
+		}
 		if len(args) != 3 {
 			t.Fatalf("got %d args, want 3: %v", len(args), args)
 		}
@@ -220,6 +223,9 @@ func TestBuildIdentityQueries(t *testing.T) {
 		sql, args := buildRADIUSQuery([]string{"macAAA"}, from, to)
 		if !strings.Contains(sql, "FROM identity_radius_events FINAL") || !strings.Contains(sql, "mac_token IN (?)") {
 			t.Fatalf("bad radius sql:\n%s", sql)
+		}
+		if !strings.Contains(sql, "ORDER BY mac_token, event_time, session_id, acct_status") {
+			t.Fatalf("radius ORDER BY must carry the schema tie-breakers for same-second determinism:\n%s", sql)
 		}
 		if len(args) != 3 {
 			t.Fatalf("got %d args, want 3: %v", len(args), args)
