@@ -8,11 +8,18 @@ enriched records to ClickHouse.
 Think: an open-source [ElastiFlow](https://www.elastiflow.com/) alternative.
 
 ```
-nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] ──► ClickHouse
+nflow-generator ──► goflow2 ──► Redpanda ──► [ Go Enricher ] ──► ClickHouse ──► Grafana
    (NetFlow v5)     (decode)    (raw-flows)    (this repo)
+
+optional forensic side-channels, tailed as log directories (env-gated):
+  BIND9 resolver ─► dnstap ─► dnstap-export sidecar ─► YAML ──► enricher   DNS  ("what")
+  NPS RADIUS + DHCP audit logs (pseudonymized at parse) ─────► enricher   identity ("who")
 ```
 
-> **Status:** Week 8 complete — PoC finished. See [Gap Analysis](#gap-analysis-poc--production) before promoting to production.
+> **Status:** flow-pipeline PoC finished (Week 8) — see [Gap Analysis](#gap-analysis-poc--production)
+> before promoting to production. On top of it sits a **DNS + identity forensic layer**:
+> [DNS enrichment](#dns-enrichment-the-what-side), [identity enrichment](#identity-enrichment),
+> and [`cmd/trace -who`](#forensic-attribution-cmdtrace) for campus-WiFi forensic attribution.
 
 ---
 
@@ -27,6 +34,8 @@ Redpanda (raw-flows)
               ├─► GeoIP + ASN  (MaxMind GeoLite2, hot-reload 24 h)
               ├─► Threat intel (Feodo Tracker CSV, hot-reload 1 h)
               ├─► Tenant mapping (CIDR radix tree, hot-reload 5 min)
+              ├─► Identity tagging (ip→MAC→user tokens from DHCP+RADIUS logs; optional, env-gated)
+              ├─► DNS tagging (src/dst hostname from resolver logs; optional, env-gated)
               └─► Sampling expansion (bytes × sampling_rate, sFlow + sampled NetFlow/IPFIX)
                     └─► BatchWriter → ClickHouse (50 k rows or 1 s, whichever first)
 ```
@@ -81,9 +90,13 @@ docker compose -f docker_compose.yml up -d
 ```
 
 Starts Redpanda (`:9092`), ClickHouse (`:9000` / `:8123`), goflow2 (NetFlow/IPFIX
-on `:2055` + `:4739` UDP, sFlow on `:6343` UDP), and nflow-generator. The generator
-immediately sends NetFlow v5 to goflow2, which decodes and publishes JSON records
-to the `raw-flows` topic.
+on `:2055` + `:4739` UDP, sFlow on `:6343` UDP), nflow-generator, Grafana (`:3000`),
+a BIND9 forwarding resolver (host networking — a wildcard `:53` publish conflicts
+with the systemd-resolved stub; logs go to `/var/log/bind`, not stdout), and a
+dnstap-export sidecar that converts BIND's binary `dnstap.bin` stream into the
+YAML the enricher tails (`DNS_LOG_FORMAT=dnstap`). The generator immediately
+sends NetFlow v5 to goflow2, which decodes and publishes JSON records to the
+`raw-flows` topic.
 
 **2. Run the enricher**
 
@@ -127,7 +140,9 @@ clickhouse schema ready
 - CPU profile: `go tool pprof http://localhost:9090/debug/pprof/profile?seconds=30`
 - **Grafana dashboard: `http://localhost:3000`** — flows/sec, bytes/sec, protocol mix,
   top destination countries, top talkers, and top destination orgs (ASN), straight
-  off the ClickHouse `flows` / `flows_1m` tables. The stack auto-provisions the
+  off the ClickHouse `flows` / `flows_1m` tables, plus a **DNS forensic row** (who
+  resolved a given domain / who was answered a given IP, with live inverse-lookup
+  dashboard variables over `dns_events`). The stack auto-provisions the
   ClickHouse datasource and the "Network Enricher — Flows" dashboard on first start
   (anonymous admin, no login). Default time range is the last 30 days; if panels are
   still empty, widen it further — they only show data the enricher has already written.
@@ -156,16 +171,25 @@ docker compose -f docker_compose.yml down
 | `dhcplog.go` | Windows DHCP audit-log parser → tokenized `DhcpEvent` |
 | `identity.go` | `IdentityStore` — ip→mac→user current-state join, hot-path `Lookup`, file poller, ClickHouse event writer |
 | `pseudonym_test.go` / `npslog_test.go` / `dhcplog_test.go` / `identity_test.go` | Identity unit + golden tests (`testdata/nps`, `testdata/dhcp` fixtures) |
+| `dnslog.go` | BIND9 querylog/answer parser → `DnsEvent` |
+| `tcpdumplog.go` | Stateful `tcpdump -v` text DNS parser (the first real MUIC capture format) |
+| `dnstaplog.go` | `dnstap-read -y` YAML parser (live BIND9 dnstap stream via the export sidecar) |
+| `dnsstore.go` | `DNSStore` — (clientIP, answeredIP)→hostname cache with hard size cap + per-record TTL, file poller, ClickHouse event writer |
+| `filepoller.go` | Shared log-directory tailer for the identity + DNS pollers (per-file offsets, rotation-aware, bounded reads) |
+| `logtz.go` | Timezone resolution for naive log timestamps (`LOG_TZ` + per-source overrides, fail-loud) |
+| `logging.go` | `slog` setup (`LOG_FORMAT` / `LOG_LEVEL`) |
+| `dnslog_test.go` / `tcpdumplog_test.go` / `dnstaplog_test.go` / `dnsstore_test.go` / `logtz_test.go` | DNS unit + golden tests (`testdata/` fixtures) |
 | `dedup.go` | `DedupStore` — 7-tuple dedup, 16-shard LRU with TTL (hashicorp/golang-lru v2) |
 | `dedup_test.go` | Unit tests for dedup hit/miss, TTL expiry, exporter distinction |
-| `batchwriter.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL |
+| `batchwriter.go` / `batchwriter_test.go` | `BatchWriter` — ClickHouse native batch API, count+time dual-trigger flush, schema DDL; durability tests |
 | `metrics.go` | Prometheus counters/gauge definitions, `/metrics` + pprof HTTP server |
 | `enrich_test.go` | Unit tests for sampling expansion (sFlow + NetFlow/IPFIX) |
 | `bench_test.go` | Benchmarks for `enrich()`, dedup hit, dedup miss |
 | `loadtest_test.go` | Per-stage load-test benchmarks: JSON decode, real-store enrich, serial + parallel consume path |
 | `cmd/loadgen/` | Standalone producer that floods `raw-flows` with high-cardinality synthetic NetFlow for end-to-end load testing |
-| `cmd/trace/` | Read-only forensic CLI: query ClickHouse for which internal host reached a given external destination around a time |
-| `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator |
+| `cmd/trace/` | Read-only forensic CLI: which internal host reached a destination (flows mode), or which device/user resolved a domain (`-who` mode, joins DNS + identity event tables) |
+| `cmd/dnsscan/` | Capture reconnaissance CLI: summarize a raw DNS capture (event counts, response codes, per-client stats) before ingesting it |
+| `docker_compose.yml` | Dev stack: Redpanda, ClickHouse, goflow2, nflow-generator, BIND9 + dnstap-export, Grafana |
 | `go.mod` / `go.sum` | Module definition and dependency checksums |
 | `CLAUDE.md` | Engineering guidelines for this project |
 
@@ -193,6 +217,11 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `IDENTITY_DHCP_DIR` | _(disabled)_ | Directory of Windows DHCP audit logs to tail |
 | `IDENTITY_MAX_LEASE` | `24h` | Max age a DHCP lease is trusted without renewal (Go duration) |
 | `IDENTITY_MAX_SESSION` | `24h` | Idle bound on a RADIUS session with no Stop (Go duration) |
+| `DNS_LOG_DIR` | _(disabled)_ | Directory of DNS resolver logs to tail. Setting it turns DNS enrichment on — no key file needed, hostnames aren't personal data (fail open) |
+| `DNS_LOG_FORMAT` | `bind` | DNS log parser: `bind` (BIND9 querylog), `tcpdump` (`tcpdump -v` text), or `dnstap` (`dnstap-read -y` YAML). Unknown value is a fatal startup error |
+| `DNS_TCPDUMP_DATE` | _(today)_ | `YYYY-MM-DD` date anchor for the tcpdump format (its text carries no date) — set it when replaying a historical capture or every event is mis-dated |
+| `DNS_TCPDUMP_RESOLVER_IP` | _(unset)_ | tcpdump format: resolver IP whose upstream leg (to the public forwarder) is dropped, keeping only client↔resolver events |
+| `LOG_TZ` | `UTC` | IANA zone (e.g. `Asia/Bangkok`) that naive log timestamps are interpreted in; per-source overrides `NPS_LOG_TZ` / `DHCP_LOG_TZ` / `DNS_LOG_TZ`. An invalid zone is a **fatal** startup error — a silent 7 h skew would mis-join forensic records |
 | `DEDUP_SIZE` | `1000000` | Max entries in the dedup LRU |
 | `DEDUP_TTL_SECONDS` | `60` | Seconds before a flow 7-tuple expires from dedup |
 | `DEDUP_DISABLE` | `false` | Bypass dedup entirely (load-test only — lets every flow reach enrich+write) |
@@ -217,7 +246,7 @@ tenants:
       - "192.168.100.0/24"
 ```
 
-### Identity enrichment (scaffold)
+### Identity enrichment
 
 Adds the **"who"** side to flows for campus-WiFi forensics. MUIC WiFi
 authenticates via 802.1X against Microsoft NPS (RADIUS), but RADIUS accounting
@@ -262,6 +291,48 @@ Run the identity tests (they use synthetic fixtures under `testdata/nps` and
 go test -run 'Tokenizer|NPS|DHCP|Identity|RADIUS|Lease|Roam|Ingest|NoRaw|FailOpen' -v .
 ```
 
+### DNS enrichment (the "what" side)
+
+The complement to identity: identity answers *who* was behind an IP, DNS answers
+*what* that client was reaching. NetFlow only shows a destination IP; behind a
+CDN one IP serves many sites, so the honest evidence is **which hostname this
+specific client resolved** just before the flow. `dnsstore.go` keeps a live map
+built from the campus resolver's logs:
+
+```
+(clientIP, answeredIP) -> hostname
+```
+
+and each flow gets `src_hostname` / `dst_hostname` stamped from it (per-client:
+another client's resolution of the same IP never tags your flow). Each entry is
+trusted for the DNS record's TTL (floored at 60 s, capped at 1 h; 10 min when
+the source omits TTLs), and unlike the identity maps this one can explode
+(client × destination cardinality), so it has a **hard cap of ~1M entries** with
+expired-first eviction — the OOM backstop, not just a TTL sweep. Raw events are
+also appended to the `dns_events` table in ClickHouse as the forensic source of
+truth (same `ReplacingMergeTree` / eventual-dedup story as the identity tables —
+use `FINAL` for exact queries).
+
+Enable it by pointing `DNS_LOG_DIR` at a log directory; `DNS_LOG_FORMAT` picks
+the parser:
+
+- **`bind`** (default) — BIND9 querylog/answer lines (`dnslog.go`)
+- **`tcpdump`** — `tcpdump -v` verbose text (`tcpdumplog.go`); needs
+  `DNS_TCPDUMP_DATE` when replaying a capture, optionally
+  `DNS_TCPDUMP_RESOLVER_IP` to drop the upstream leg
+- **`dnstap`** — `dnstap-read -y` YAML (`dnstaplog.go`), the live path: the
+  compose stack runs BIND9 with dnstap on and a `dnstap-export` sidecar that
+  converts the binary stream to YAML for the enricher to tail
+
+Two deliberate differences from identity: hostnames are **not** personal data,
+so there is no tokenizer and no key file — the dir alone turns it on, and
+lookups fail open (a miss leaves the flow untagged, never dropped). Timestamps
+are interpreted per `LOG_TZ` / `DNS_LOG_TZ` — an invalid zone is fatal, since a
+silently skewed clock corrupts evidence.
+
+`cmd/dnsscan` is a standalone recon CLI for sizing up a raw DNS capture before
+ingesting it (event counts, response-code breakdown, per-client stats).
+
 ---
 
 ## ClickHouse schema
@@ -273,16 +344,25 @@ The enricher auto-creates tables on startup (no manual DDL needed):
 | `flows` | `MergeTree` | Raw enriched flows, 90-day TTL, partitioned by day |
 | `flows_1m` | `SummingMergeTree` | Per-minute aggregates (bytes, packets, flow count) |
 | `flows_1h` | `SummingMergeTree` | Per-hour aggregates |
+| `identity_dhcp_events` | `ReplacingMergeTree` | Raw (tokenized) DHCP lease events — forensic source of truth for ip→MAC |
+| `identity_radius_events` | `ReplacingMergeTree` | Raw (tokenized) RADIUS accounting events — MAC→user |
+| `dns_events` | `ReplacingMergeTree` | Per-client DNS resolutions (client, qname, answered IP) — the "what" evidence |
 
-Materialized views (`flows_1m_mv`, `flows_1h_mv`) populate the aggregate tables automatically.
+Materialized views (`flows_1m_mv`, `flows_1h_mv`) populate the aggregate tables
+automatically. The three event tables dedup replayed rows on merge — dedup is
+**eventual**, so exact forensic queries use `FINAL` (as `cmd/trace -who` does).
 
 ---
 
 ## Forensic attribution (`cmd/trace`)
 
-`cmd/trace` is a read-only CLI that queries the `flows` table to answer:
-**"which internal host reached a given external destination (e.g. Facebook) around time T?"**
-It uses the same `CLICKHOUSE_*` env vars as the enricher.
+`cmd/trace` is a read-only CLI with two modes, both using the same
+`CLICKHOUSE_*` env vars as the enricher:
+
+- **flows mode** (default) queries the `flows` table:
+  **"which internal host reached a given external destination (e.g. Facebook) around time T?"**
+- **who mode** (`-who`) joins the DNS + identity event tables:
+  **"which device/user resolved this domain (or was answered this IP) around time T?"**
 
 ```bash
 # By friendly service name, ±15m around a time:
@@ -316,6 +396,30 @@ The time window drives partition pruning (`flows` is partitioned by day), so a b
 window keeps scans cheap. All user values are bound as `?` parameters — never
 string-concatenated — so `-dst-org`/`-src-ip` cannot inject SQL.
 
+### Who mode (`-who`)
+
+```bash
+# Which device/user resolved facebook.com (or any subdomain) around a time?
+go run ./cmd/trace -who -qname facebook.com -around "2026-07-15 14:30:00" -window 15m
+
+# Same question keyed by the answered IP instead of the domain:
+go run ./cmd/trace -who -dst-ip 203.0.113.7 -around "2026-07-15 14:30:00" -json
+```
+
+Pick exactly one of `-qname` (exact or subdomain match) or `-dst-ip` (the
+*answered* IP) plus the same UTC time-window flags as flows mode. It chains
+three tables: `dns_events` (which client IP resolved the name in the window)
+→ `identity_dhcp_events` (which MAC held that IP at that instant) →
+`identity_radius_events` (which user was on that MAC). The DHCP/RADIUS fold is
+a behaviorally-identical re-expression of the live store's binding semantics
+(`cmd/trace/identity_join.go`), evaluated *as of* each event's timestamp rather
+than as current state, and all three tables are queried with `FINAL` so
+replayed duplicate rows can't double-count.
+
+Output is **pseudonymous by construction**: `mac_token` / `user_token` HMAC
+pseudonyms, never names — resolving a token to a person requires the secret
+key held outside the pipeline (see [Identity enrichment](#identity-enrichment)).
+
 **Limitations (read before acting on results):**
 - NetFlow proves a host opened a connection to a Facebook IP on `:443` — **not** which
   page, post, or message. It is connection metadata, not content.
@@ -323,8 +427,9 @@ string-concatenated — so `-dst-org`/`-src-ip` cannot inject SQL.
   GeoIP/ASN database before relying on it.
 - Sampled exporters (`sampling_rate > 1`) record only a fraction of flows, so absence of a
   row is **not** proof a host did not connect.
-- **Identity mapping (IP → person) is out of scope.** `trace` answers *which internal IP*;
-  resolving that to a user is a separate, confidential join against DHCP/RADIUS records.
+- **Neither mode names a person.** Flows mode answers *which internal IP*; who mode
+  answers *which token*. The token→person step needs the pseudonymization key and the
+  institution's authorization — deliberately outside this tool.
 
 ---
 
@@ -494,6 +599,13 @@ Two options, in order of effort:
 | `enricher_identity_tag_misses_total` | Counter | Flows where identity resolved no token |
 | `enricher_identity_event_write_errors_total` | Counter | ClickHouse identity-event writes that failed (retried next scan) |
 | `enricher_identity_scan_panics_total` | Counter | Identity poller scans that panicked and were recovered |
+| `enricher_dns_events_parsed_total` | Counter | DNS log events parsed+applied |
+| `enricher_dns_parse_errors_total` | Counter | Malformed DNS log lines skipped |
+| `enricher_dns_tag_hits_total` | Counter | Flows where DNS resolved ≥1 hostname |
+| `enricher_dns_tag_misses_total` | Counter | Flows where DNS resolved no hostname |
+| `enricher_dns_evictions_total` | Counter | DNS cache entries evicted at the hard size cap |
+| `enricher_dns_event_write_errors_total` | Counter | ClickHouse DNS-event writes that failed (retried next scan) |
+| `enricher_dns_scan_panics_total` | Counter | DNS poller scans that panicked and were recovered |
 
 ---
 
