@@ -370,7 +370,7 @@
           "refId": "A",
           "editorType": "sql",
           "queryType": "table",
-          "rawSql": "SELECT client_ip, count() AS resolutions, min(event_time) AS first_seen, max(event_time) AS last_seen FROM dns_events WHERE $__timeFilter(event_time) AND qname = '${qname}' AND answer_ip = '${answer_ip}' GROUP BY client_ip ORDER BY resolutions DESC LIMIT 50"
+          "rawSql": "SELECT client_ip, count() AS resolutions, toString(min(event_time)) AS first_seen, toString(max(event_time)) AS last_seen FROM dns_events WHERE $__timeFilter(event_time) AND qname = '${qname}' AND answer_ip = '${answer_ip}' GROUP BY client_ip ORDER BY resolutions DESC LIMIT 50"
         }
       ]
     }
