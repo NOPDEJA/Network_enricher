@@ -57,6 +57,7 @@ type ipBinding struct {
 	macToken  string
 	eventTime time.Time // time of the event that set this binding (newest-wins guard)
 	deadline  time.Time // lease is trusted until this instant
+	closed    bool      // tombstone: a release closed this lease (reads as absent)
 }
 
 type macBinding struct {
@@ -64,6 +65,7 @@ type macBinding struct {
 	sessionID string
 	eventTime time.Time // time of the event that set this binding (newest-wins guard)
 	deadline  time.Time // session is trusted until this instant
+	closed    bool      // tombstone: a Stop closed this session (reads as absent)
 }
 
 // NewIdentityStore builds the store. conn may be nil (ClickHouse unavailable),
@@ -110,11 +112,11 @@ func (s *IdentityStore) Lookup(ip string) (macToken, userToken string) {
 	defer s.mu.RUnlock()
 
 	ib, ok := s.ipState[ip]
-	if !ok || now.After(ib.deadline) {
+	if !ok || ib.closed || now.After(ib.deadline) {
 		return "", ""
 	}
 	mb, ok := s.macState[ib.macToken]
-	if !ok || now.After(mb.deadline) {
+	if !ok || mb.closed || now.After(mb.deadline) {
 		return ib.macToken, ""
 	}
 	return ib.macToken, mb.userToken
@@ -124,13 +126,21 @@ func (s *IdentityStore) Lookup(ip string) (macToken, userToken string) {
 //
 //	10 assign / 11 renew  -> (re)open the lease; a different MAC on the same IP
 //	                         replaces the old binding (reassignment wins)
-//	12 release            -> close the lease, but only if it still belongs to the
-//	                         releasing MAC (ignore a stale release for an IP that
-//	                         has already been reassigned)
+//	12 release            -> tombstone the lease (mark it closed, don't delete),
+//	                         but only if it still belongs to the releasing MAC
+//	                         (ignore a stale release for an IP already reassigned)
 //
 // Newest-event-wins: an event older than the binding it would change is ignored,
 // so a restart replay (offsets are in-memory, so a restart re-reads from 0) or a
-// multi-file scan applying files out of order can't roll state backward.
+// multi-file scan applying files out of order can't roll state backward. A
+// release leaves a tombstone rather than deleting so a later out-of-order OLDER
+// assign can't resurrect the closed lease (a delete would leave nothing for the
+// guard to compare against). Reopening a tombstone with the SAME MAC requires a
+// strictly-newer event, so a same-second assign+release tie for one MAC resolves
+// to closed. A DIFFERENT MAC uses the ordinary not-older rule, so a same-second
+// cross-MAC handover (release MAC1 + assign MAC2) converges on MAC2 leased in
+// either arrival order: assign-first → the release no-ops on the MAC mismatch;
+// release-first → the tombstone, then the not-older cross-MAC assign rebinds.
 //
 // The lease deadline is event time + maxLease: the audit log has no reliable
 // lease-duration column, so maxLease is the trust horizon.
@@ -143,13 +153,25 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 
 	switch e.EventID {
 	case 10, 11:
-		if b, ok := s.ipState[e.IP]; ok && e.EventTime.Before(b.eventTime) {
-			return // older than current binding: don't overwrite newer state
+		if b, ok := s.ipState[e.IP]; ok {
+			if b.closed && b.macToken == e.MACToken {
+				if !e.EventTime.After(b.eventTime) {
+					return // not strictly newer than the same-MAC tombstone: stays closed
+				}
+			} else if e.EventTime.Before(b.eventTime) {
+				return // older than current binding: don't overwrite newer state
+			}
 		}
 		s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: e.EventTime.Add(s.maxLease)}
 	case 12:
 		if b, ok := s.ipState[e.IP]; ok && b.macToken == e.MACToken && !e.EventTime.Before(b.eventTime) {
-			delete(s.ipState, e.IP)
+			// Tombstone, don't delete: a later OLDER assign must find this closed
+			// binding so the newest-wins guard rejects it. The tombstone expires
+			// via its deadline; safe because any assign older than this release
+			// has deadline < releaseTime+maxLease, so once the tombstone is
+			// evicted a late resurrection is already past its own deadline and
+			// Lookup's deadline check rejects it.
+			s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: e.EventTime.Add(s.maxLease), closed: true}
 		}
 	}
 }
@@ -158,7 +180,7 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 //
 //	Start           -> open the session for this MAC
 //	Interim-Update  -> extend it (idle bound resets)
-//	Stop            -> close it
+//	Stop            -> tombstone it (mark closed, don't delete)
 //
 // Newest-event-wins keeps out-of-order/replayed records from misattributing a
 // device:
@@ -167,10 +189,18 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 //     takes over; an Interim whose Start we never saw — e.g. after a restart —
 //     bootstraps state). An older event from a *different* session is ignored,
 //     and an older event for the *same* session must not shrink the deadline.
-//   - Stop closes the session only on an exact session-ID match (so a Stop with
-//     an empty Acct-Session-Id can only close a binding whose stored ID is also
-//     empty, never a live named session) and only if it isn't older than the
-//     binding.
+//     Reopening a tombstoned (closed) session with the SAME session_id requires
+//     a strictly-newer event, so a same-second Start+Stop tie for one session
+//     resolves to closed. A DIFFERENT session_id uses the ordinary not-older
+//     rule, so a same-second cross-session handover (Stop S1 + Start S2)
+//     converges on S2 open in either arrival order: Start-first → the Stop
+//     no-ops on the session mismatch; Stop-first → the tombstone, then the
+//     not-older cross-session Start rebinds.
+//   - Stop tombstones the session only on an exact session-ID match (so a Stop
+//     with an empty Acct-Session-Id can only close a binding whose stored ID is
+//     also empty, never a live named session) and only if it isn't older than
+//     the binding. It leaves a tombstone rather than deleting so a later OLDER
+//     Start/Interim can't resurrect the closed session.
 //
 // The session survives a device roaming to a new IP: the new DHCP lease points
 // the new IP at the same MAC, whose session is still open — so the user stays
@@ -185,7 +215,11 @@ func (s *IdentityStore) applyRADIUS(e RadiusEvent) {
 	switch e.AcctStatus {
 	case "Start", "Interim-Update":
 		if b, ok := s.macState[e.MACToken]; ok {
-			if b.sessionID == e.SessionID {
+			if b.closed && b.sessionID == e.SessionID {
+				if !e.EventTime.After(b.eventTime) {
+					return // not strictly newer than the same-session tombstone: stays closed
+				}
+			} else if b.sessionID == e.SessionID {
 				if e.EventTime.Before(b.eventTime) {
 					return // older same-session event: don't move the deadline backward
 				}
@@ -201,7 +235,19 @@ func (s *IdentityStore) applyRADIUS(e RadiusEvent) {
 		}
 	case "Stop":
 		if b, ok := s.macState[e.MACToken]; ok && b.sessionID == e.SessionID && !e.EventTime.Before(b.eventTime) {
-			delete(s.macState, e.MACToken)
+			// Tombstone, don't delete: a later OLDER Start/Interim must find this
+			// closed session so the newest-wins guard rejects it. The tombstone
+			// expires via its deadline; safe because any open event older than
+			// this Stop has deadline < stopTime+maxSession, so once the tombstone
+			// is evicted a late resurrection is already past its own deadline and
+			// Lookup's deadline check rejects it.
+			s.macState[e.MACToken] = macBinding{
+				userToken: e.UserToken,
+				sessionID: e.SessionID,
+				eventTime: e.EventTime,
+				deadline:  e.EventTime.Add(s.maxSession),
+				closed:    true,
+			}
 		}
 	}
 }
