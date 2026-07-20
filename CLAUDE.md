@@ -142,6 +142,8 @@ The main session acts as **tech lead**: discuss the problem with the user, decid
 
 Lead responsibilities: don't delegate design decisions; review subagent output before presenting it to the user; for nontrivial changes, route the engineer's diff through `codex` before calling it done. Trivial one-file edits: just do them inline — spawning costs more than it saves.
 
+**Design pre-review (adopted 2026-07-20):** for *significant* designs — a new subsystem, forensic/evidence semantics, schema or privacy-model changes — route the decided design through `codex` (high/xhigh effort) to challenge it BEFORE delegating to `engineer`. A design flaw caught pre-implementation saves a whole implementation-plus-fix cycle; the tombstone fix's same-second handover flaw (7/20) is the motivating example. Small fixes and mechanical work skip this — the diff review alone is enough.
+
 **Delegation handoff — the hidden token cost of delegating is the engineer re-discovering context you already have.** Each agent starts cold, so hand it, not the problem:
 - the *decided approach* (you already solved the design — don't make it re-derive one)
 - the exact files + entry points to touch (paths, function/type names)
