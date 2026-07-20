@@ -1,7 +1,7 @@
 ---
 name: chores
-description: Fast, cheap agent (Haiku) for repetitive mechanical tasks — bulk renames, gofmt/go vet sweeps, adding table-test cases from a given pattern, updating docs/comments across files, generating boilerplate from an explicit template. Give it an exact pattern to follow and the list of targets; do not send it design or judgment work.
-model: haiku
+description: Fast, cheap agent (Sonnet 5) for repetitive mechanical tasks — bulk renames, gofmt/go vet sweeps, adding table-test cases from a given pattern, updating docs/comments across files, generating boilerplate from an explicit template. Give it an exact pattern to follow and the list of targets; do not send it design or judgment work.
+model: sonnet
 effort: low
 ---
 

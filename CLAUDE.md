@@ -138,7 +138,7 @@ The main session acts as **tech lead**: discuss the problem with the user, decid
 
 - **`engineer`** (Opus, `.claude/agents/engineer.md`) — implements decided, well-scoped coding tasks. Hand it the approach, files, and success criteria.
 - **`codex`** (`.claude/agents/codex.md`) — independent second-opinion review of designs/diffs from another angle. Uses OpenAI Codex CLI when installed; otherwise a clearly-labeled Claude fallback review. Read-only.
-- **`chores`** (Haiku, `.claude/agents/chores.md`) — repetitive mechanical work (bulk renames, gofmt sweeps, boilerplate from an explicit pattern).
+- **`chores`** (Sonnet 5, `.claude/agents/chores.md`) — repetitive mechanical work (bulk renames, gofmt sweeps, boilerplate from an explicit pattern).
 
 Lead responsibilities: don't delegate design decisions; review subagent output before presenting it to the user; for nontrivial changes, route the engineer's diff through `codex` before calling it done. Trivial one-file edits: just do them inline — spawning costs more than it saves.
 
