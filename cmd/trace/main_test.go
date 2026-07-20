@@ -207,8 +207,11 @@ func TestBuildIdentityQueries(t *testing.T) {
 		if !strings.Contains(sql, "FROM identity_dhcp_events FINAL") || !strings.Contains(sql, "ip IN (?)") {
 			t.Fatalf("bad dhcp sql:\n%s", sql)
 		}
-		if !strings.Contains(sql, "ORDER BY ip, event_time, event_id, mac_token") {
-			t.Fatalf("dhcp ORDER BY must carry the schema tie-breakers for same-second determinism:\n%s", sql)
+		// Must equal identity_dhcp_events' full ORDER BY in schema.sql
+		// (host_token included), so FINAL cannot collapse two same-second events
+		// that differ only by host_token. See migrations/002_identity_orderby.sql.
+		if !strings.Contains(sql, "ORDER BY ip, event_time, event_id, mac_token, host_token") {
+			t.Fatalf("dhcp ORDER BY must repeat the table's full ORDER BY:\n%s", sql)
 		}
 		if len(args) != 3 {
 			t.Fatalf("got %d args, want 3: %v", len(args), args)
@@ -224,8 +227,12 @@ func TestBuildIdentityQueries(t *testing.T) {
 		if !strings.Contains(sql, "FROM identity_radius_events FINAL") || !strings.Contains(sql, "mac_token IN (?)") {
 			t.Fatalf("bad radius sql:\n%s", sql)
 		}
-		if !strings.Contains(sql, "ORDER BY mac_token, event_time, session_id, acct_status") {
-			t.Fatalf("radius ORDER BY must carry the schema tie-breakers for same-second determinism:\n%s", sql)
+		// Must equal identity_radius_events' full ORDER BY in schema.sql
+		// (user_token and nas_ip included) — omitting them let FINAL collapse
+		// genuinely distinct same-second accounting events, which is evidence
+		// loss. See migrations/002_identity_orderby.sql.
+		if !strings.Contains(sql, "ORDER BY mac_token, event_time, session_id, acct_status, user_token, nas_ip") {
+			t.Fatalf("radius ORDER BY must repeat the table's full ORDER BY:\n%s", sql)
 		}
 		if len(args) != 3 {
 			t.Fatalf("got %d args, want 3: %v", len(args), args)

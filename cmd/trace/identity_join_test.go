@@ -14,11 +14,12 @@ func TestDHCPBindingAt(t *testing.T) {
 	const lease = time.Hour
 
 	tests := []struct {
-		name   string
-		events []dhcpEvent
-		ip     string
-		at     time.Time
-		want   string
+		name    string
+		events  []dhcpEvent
+		ip      string
+		at      time.Time
+		want    string
+		wantAmb bool
 	}{
 		{
 			name:   "empty input",
@@ -75,9 +76,9 @@ func TestDHCPBindingAt(t *testing.T) {
 			want: "",
 		},
 		{
-			// Same-second assign+release arrive in the query's deterministic
-			// order (ORDER BY ..., event_id): release (12) after assign (10),
-			// so the tie resolves to closed.
+			// Same-second assign+release of the SAME MAC: the batch's close set
+			// removes the MAC the batch's open set introduced, so the lease ends
+			// closed regardless of row order (spec case 2).
 			name: "same-second assign and release resolves to released",
 			events: []dhcpEvent{
 				{Time: tm(10, 20), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
@@ -155,8 +156,8 @@ func TestDHCPBindingAt(t *testing.T) {
 		},
 		{
 			// Cross-MAC same-second handover: release macA + assign macB at the
-			// same second must leave macB leased (the strict reopen guard is
-			// same-MAC only, so the different-MAC assign takes the not-older path).
+			// same second must leave macB leased — the batch's open set is
+			// {macB} and the close set {macA} removes nothing from it.
 			name: "same-second cross-MAC handover leaves new MAC leased",
 			events: []dhcpEvent{
 				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
@@ -211,8 +212,9 @@ func TestDHCPBindingAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := dhcpBindingAt(tt.events, tt.ip, tt.at, lease); got != tt.want {
-				t.Fatalf("dhcpBindingAt = %q, want %q", got, tt.want)
+			got, amb := dhcpBindingAt(tt.events, tt.ip, tt.at, lease)
+			if got != tt.want || amb != tt.wantAmb {
+				t.Fatalf("dhcpBindingAt = (%q, %v), want (%q, %v)", got, amb, tt.want, tt.wantAmb)
 			}
 		})
 	}
@@ -222,11 +224,12 @@ func TestRADIUSBindingAt(t *testing.T) {
 	const sess = time.Hour
 
 	tests := []struct {
-		name   string
-		events []radiusEvent
-		mac    string
-		at     time.Time
-		want   string
+		name    string
+		events  []radiusEvent
+		mac     string
+		at      time.Time
+		want    string
+		wantAmb bool
 	}{
 		{
 			name:   "empty input",
@@ -284,9 +287,9 @@ func TestRADIUSBindingAt(t *testing.T) {
 			want: "",
 		},
 		{
-			// Same-second Start+Stop arrive in the query's deterministic order
-			// (ORDER BY ..., acct_status): "Start" < "Stop" lexicographically,
-			// so the tie resolves to closed.
+			// Same-second Start+Stop of the SAME session: the batch's close set
+			// removes the session its open set introduced, so it ends closed
+			// regardless of row order (spec case 2).
 			name: "same-second start and stop resolves to closed",
 			events: []radiusEvent{
 				{Time: tm(10, 20), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
@@ -330,8 +333,14 @@ func TestRADIUSBindingAt(t *testing.T) {
 			want: "",
 		},
 		{
-			// An older cross-session Interim after a Stop also must not resurrect.
-			name: "older cross-session interim after stop does not resurrect",
+			// DELIBERATE DIVERGENCE from the live store (see identity_join.go's
+			// header). The s0 interim is at 10:10 and merely ARRIVES after the
+			// 10:20 Stop; the evidence says s0 opened at 10:10 and displaced s1
+			// (the inherited bare-interim behavior, spec case 11), and the 10:20
+			// Stop names s1, which is no longer a candidate — an unrelated close
+			// (spec case 5). The batch fold reads timestamps, not arrival order,
+			// so s0 survives. The old arrival-order fold answered "" here.
+			name: "interim for another session before a stop survives that stop",
 			events: []radiusEvent{
 				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
 				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
@@ -339,7 +348,7 @@ func TestRADIUSBindingAt(t *testing.T) {
 			},
 			mac:  "macA",
 			at:   tm(10, 30),
-			want: "",
+			want: "userZ",
 		},
 		{
 			// A strictly-newer Start after a Stop is a genuine reopen.
@@ -355,8 +364,8 @@ func TestRADIUSBindingAt(t *testing.T) {
 		},
 		{
 			// Cross-session same-second handover: Stop s1 + Start s2 at the same
-			// second must attribute userB (the strict reopen guard is same-session
-			// only, so the different-session Start takes the not-older path).
+			// second must attribute userB — the batch's open set is {(s2,userB)}
+			// and the close set {s1} removes nothing from it.
 			name: "same-second cross-session handover attributes new session",
 			events: []radiusEvent{
 				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
@@ -411,8 +420,9 @@ func TestRADIUSBindingAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := radiusBindingAt(tt.events, tt.mac, tt.at, sess); got != tt.want {
-				t.Fatalf("radiusBindingAt = %q, want %q", got, tt.want)
+			got, amb := radiusBindingAt(tt.events, tt.mac, tt.at, sess)
+			if got != tt.want || amb != tt.wantAmb {
+				t.Fatalf("radiusBindingAt = (%q, %v), want (%q, %v)", got, amb, tt.want, tt.wantAmb)
 			}
 		})
 	}
