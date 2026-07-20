@@ -49,3 +49,43 @@ Two forensic enrichers were added after this review (identity "who"-tokens, merg
 - **Off the hot path:** log parsing runs on dedicated 30s poller goroutines; identity/DNS event rows go to ClickHouse through small dedicated buffered writers, separate from the flow `BatchWriter`.
 - **Memory:** the DNS live map is the only store whose key space scales with traffic (client × destination); it is hard-capped at ~1M entries with expired-first eviction, where victim *selection* runs under `RLock` so flow-path lookups are not stalled by an eviction sweep.
 - **Verified:** `go test -race` clean and an end-to-end synthetic run on the live pipeline (per-client tagging, replay dedup via `ReplacingMergeTree`) passed 2026-07-09.
+
+## Addendum (2026-07-20): Identity v2 — evidence-path determinism
+
+Follow-up to the tombstone fix (1ed2c4b). An independent review found that the
+*forensic* path resolved same-timestamp events by the order ClickHouse happened
+to return the rows in — information the stored evidence does not contain — plus
+a schema defect losing raw events outright. Three changes, all off the hot path:
+
+- **`cmd/trace` is the evidence path and is now deterministic.** `identity_join.go`
+  folds events whose `event_time` is identical as a **set** (candidate set +
+  one carried deadline) instead of sequentially, so the answer no longer depends
+  on row order. Where the evidence genuinely holds several candidates, the tool
+  reports **"ambiguous at that time"** — deliberately distinct from the existing
+  **"unknown at that time"** — rather than silently picking one; an ambiguous
+  device short-circuits the RADIUS join, since there is no single MAC to key on.
+  This file **no longer mirrors `identity.go`** and must not be re-synced to it.
+- **The live store remains advisory / best-effort and is UNCHANGED.** It still
+  folds in arrival order, so live tags and `cmd/trace` can disagree under
+  same-second replay; `cmd/trace` is the answer of record. Its known false-
+  attribution hole (F1: a same-second cross-entity open erases the single-slot
+  tombstone, letting a replayed older open resurrect a closed session) is
+  **documented, not fixed** — a correct fix needs per-entity tombstones with
+  heap-based expiry, and the reviewed design put an O(n) scan under the mutex
+  `Lookup` holds, which violates CLAUDE.md §6 to harden a store that is advisory
+  anyway. `cmd/trace` is immune to F1 by construction.
+- **Identity ORDER BY widened to the full row, forward-only.**
+  `identity_radius_events` omitted `user_token`/`nas_ip` and
+  `identity_dhcp_events` omitted `host_token`, so `ReplacingMergeTree` + `FINAL`
+  collapsed genuinely distinct same-second events into one row — raw evidence
+  loss in the source of truth. `migrations/002_identity_orderby.sql` fixes the
+  schema going forward; rows already collapsed under the old key are **gone and
+  are not recovered**. NPS timestamps are now truncated to whole seconds at parse
+  so the live store stops ordering by a precision that never reaches the
+  second-resolution `DateTime` column.
+
+Verified: `go build`/`go vet`/`go test ./...` green; the 11 spec cases are
+table-driven and same-timestamp batches are asserted over **every permutation**;
+the regression cases were confirmed red against the previous implementation
+before the fix landed. `go test -race` is pending — it runs on the Linux box, as
+this dev machine has no 64-bit CGO.
