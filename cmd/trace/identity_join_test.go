@@ -128,6 +128,32 @@ func TestDHCPBindingAt(t *testing.T) {
 			want: "macA",
 		},
 		{
+			// Resurrection guard: a released lease must not be reopened by an
+			// out-of-order OLDER assign arriving after the release. The tombstone
+			// keeps the closed binding so the newest-wins guard rejects it.
+			name: "older assign after release does not resurrect the lease",
+			events: []dhcpEvent{
+				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
+				{Time: tm(10, 20), EventID: 12, IP: "10.0.0.1", MACToken: "macA"},
+				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: "macA"}, // older, replayed
+			},
+			ip:   "10.0.0.1",
+			at:   tm(10, 30),
+			want: "",
+		},
+		{
+			// A strictly-newer assign after a release is a genuine reopen.
+			name: "newer assign after release re-binds",
+			events: []dhcpEvent{
+				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: "macA"},
+				{Time: tm(10, 20), EventID: 12, IP: "10.0.0.1", MACToken: "macA"},
+				{Time: tm(10, 40), EventID: 10, IP: "10.0.0.1", MACToken: "macB"},
+			},
+			ip:   "10.0.0.1",
+			at:   tm(10, 50),
+			want: "macB",
+		},
+		{
 			name: "empty MAC token event is ignored",
 			events: []dhcpEvent{
 				{Time: tm(10, 0), EventID: 10, IP: "10.0.0.1", MACToken: ""},
@@ -262,6 +288,43 @@ func TestRADIUSBindingAt(t *testing.T) {
 			},
 			mac:  "macA",
 			at:   tm(10, 30),
+			want: "userB",
+		},
+		{
+			// Resurrection guard: a stopped session must not be reopened by an
+			// out-of-order OLDER Start arriving after the Stop.
+			name: "older start after stop does not resurrect the session",
+			events: []radiusEvent{
+				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"}, // older, replayed
+			},
+			mac:  "macA",
+			at:   tm(10, 30),
+			want: "",
+		},
+		{
+			// An older cross-session Interim after a Stop also must not resurrect.
+			name: "older cross-session interim after stop does not resurrect",
+			events: []radiusEvent{
+				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 10), AcctStatus: "Interim-Update", SessionID: "s0", UserToken: "userZ", MACToken: "macA"},
+			},
+			mac:  "macA",
+			at:   tm(10, 30),
+			want: "",
+		},
+		{
+			// A strictly-newer Start after a Stop is a genuine reopen.
+			name: "newer start after stop re-binds",
+			events: []radiusEvent{
+				{Time: tm(10, 0), AcctStatus: "Start", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 20), AcctStatus: "Stop", SessionID: "s1", UserToken: "userA", MACToken: "macA"},
+				{Time: tm(10, 40), AcctStatus: "Start", SessionID: "s2", UserToken: "userB", MACToken: "macA"},
+			},
+			mac:  "macA",
+			at:   tm(10, 50),
 			want: "userB",
 		},
 		{
