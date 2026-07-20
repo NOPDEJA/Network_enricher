@@ -217,9 +217,13 @@ ORDER BY ip, event_time, event_id, mac_token`
 
 // buildRADIUSQuery is who-mode query 3: every accounting event for the candidate
 // mac_tokens, over a window widened back by maxSession. FINAL is mandatory.
-// Full-table ORDER BY for deterministic same-second ties, as in buildDHCPQuery
-// (lexicographic acct_status puts Stop after Start/Interim-Update, so a
-// same-second Start+Stop deterministically ends closed).
+// Full-table ORDER BY for deterministic same-second ties, as in buildDHCPQuery.
+// session_id sorts before acct_status, so the acct_status tie-break only orders
+// events WITHIN one session_id: a same-second Start+Stop of the SAME session
+// deterministically ends closed (Stop sorts after Start/Interim-Update). A
+// same-second CROSS-session tie (Stop S1 + Start S2) converges on the newer
+// session open regardless of that ordering — the reducer's cross-session
+// not-older rule (radiusBindingAt) rebinds either way.
 func buildRADIUSQuery(macTokens []string, from, to time.Time) (string, []any) {
 	const q = `SELECT event_time, acct_status, session_id, user_token, mac_token
 FROM identity_radius_events FINAL

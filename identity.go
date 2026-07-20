@@ -135,8 +135,12 @@ func (s *IdentityStore) Lookup(ip string) (macToken, userToken string) {
 // multi-file scan applying files out of order can't roll state backward. A
 // release leaves a tombstone rather than deleting so a later out-of-order OLDER
 // assign can't resurrect the closed lease (a delete would leave nothing for the
-// guard to compare against); reopening a tombstone requires a strictly-newer
-// event, so a same-second open-vs-close tie resolves to closed.
+// guard to compare against). Reopening a tombstone with the SAME MAC requires a
+// strictly-newer event, so a same-second assign+release tie for one MAC resolves
+// to closed. A DIFFERENT MAC uses the ordinary not-older rule, so a same-second
+// cross-MAC handover (release MAC1 + assign MAC2) converges on MAC2 leased in
+// either arrival order: assign-first → the release no-ops on the MAC mismatch;
+// release-first → the tombstone, then the not-older cross-MAC assign rebinds.
 //
 // The lease deadline is event time + maxLease: the audit log has no reliable
 // lease-duration column, so maxLease is the trust horizon.
@@ -150,9 +154,9 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 	switch e.EventID {
 	case 10, 11:
 		if b, ok := s.ipState[e.IP]; ok {
-			if b.closed {
+			if b.closed && b.macToken == e.MACToken {
 				if !e.EventTime.After(b.eventTime) {
-					return // not strictly newer than the tombstone: lease stays closed
+					return // not strictly newer than the same-MAC tombstone: stays closed
 				}
 			} else if e.EventTime.Before(b.eventTime) {
 				return // older than current binding: don't overwrite newer state
@@ -185,8 +189,13 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 //     takes over; an Interim whose Start we never saw — e.g. after a restart —
 //     bootstraps state). An older event from a *different* session is ignored,
 //     and an older event for the *same* session must not shrink the deadline.
-//     Reopening a tombstoned (closed) session requires a strictly-newer event,
-//     so a same-second Start-vs-Stop tie resolves to closed.
+//     Reopening a tombstoned (closed) session with the SAME session_id requires
+//     a strictly-newer event, so a same-second Start+Stop tie for one session
+//     resolves to closed. A DIFFERENT session_id uses the ordinary not-older
+//     rule, so a same-second cross-session handover (Stop S1 + Start S2)
+//     converges on S2 open in either arrival order: Start-first → the Stop
+//     no-ops on the session mismatch; Stop-first → the tombstone, then the
+//     not-older cross-session Start rebinds.
 //   - Stop tombstones the session only on an exact session-ID match (so a Stop
 //     with an empty Acct-Session-Id can only close a binding whose stored ID is
 //     also empty, never a live named session) and only if it isn't older than
@@ -206,9 +215,9 @@ func (s *IdentityStore) applyRADIUS(e RadiusEvent) {
 	switch e.AcctStatus {
 	case "Start", "Interim-Update":
 		if b, ok := s.macState[e.MACToken]; ok {
-			if b.closed {
+			if b.closed && b.sessionID == e.SessionID {
 				if !e.EventTime.After(b.eventTime) {
-					return // not strictly newer than the tombstone: session stays closed
+					return // not strictly newer than the same-session tombstone: stays closed
 				}
 			} else if b.sessionID == e.SessionID {
 				if e.EventTime.Before(b.eventTime) {

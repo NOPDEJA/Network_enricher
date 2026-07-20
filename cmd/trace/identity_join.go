@@ -59,8 +59,10 @@ type macBinding struct {
 // dhcpBindingAt returns the mac_token leased to ip at instant t, or "" if no
 // trusted lease covers t. It mirrors applyDHCP (newest-event-wins; a different
 // MAC reassigns; release tombstones only its own MAC so a later OLDER assign
-// can't resurrect it; reopening a tombstone needs a strictly-newer event) plus
-// Lookup's deadline/closed check, evaluated over the events at or before t.
+// can't resurrect it; reopening a SAME-MAC tombstone needs a strictly-newer
+// event, while a different MAC uses the ordinary not-older rule so a same-second
+// cross-MAC handover converges on the new MAC) plus Lookup's deadline/closed
+// check, evaluated over the events at or before t.
 func dhcpBindingAt(events []dhcpEvent, ip string, t time.Time, maxLease time.Duration) string {
 	var b ipBinding
 	have := false
@@ -71,9 +73,9 @@ func dhcpBindingAt(events []dhcpEvent, ip string, t time.Time, maxLease time.Dur
 		switch e.EventID {
 		case 10, 11: // assign / renew
 			if have {
-				if b.closed {
+				if b.closed && b.macToken == e.MACToken {
 					if !e.Time.After(b.eventTime) {
-						continue // not strictly newer than the tombstone: stays closed
+						continue // not strictly newer than the same-MAC tombstone: stays closed
 					}
 				} else if e.Time.Before(b.eventTime) {
 					continue // older than current binding: don't overwrite newer state
@@ -97,7 +99,9 @@ func dhcpBindingAt(events []dhcpEvent, ip string, t time.Time, maxLease time.Dur
 // "" if no trusted session covers t. It mirrors applyRADIUS (Start/Interim open
 // or extend; a newer session takes over; Stop tombstones only the exact
 // session_id so a later OLDER Start/Interim can't resurrect it; reopening a
-// tombstone needs a strictly-newer event) plus Lookup's deadline/closed check,
+// SAME-session tombstone needs a strictly-newer event, while a different
+// session_id uses the ordinary not-older rule so a same-second cross-session
+// handover converges on the new session) plus Lookup's deadline/closed check,
 // evaluated over the events at or before t.
 func radiusBindingAt(events []radiusEvent, mac string, t time.Time, maxSession time.Duration) string {
 	var b macBinding
@@ -109,9 +113,9 @@ func radiusBindingAt(events []radiusEvent, mac string, t time.Time, maxSession t
 		switch e.AcctStatus {
 		case "Start", "Interim-Update":
 			if have {
-				if b.closed {
+				if b.closed && b.sessionID == e.SessionID {
 					if !e.Time.After(b.eventTime) {
-						continue // not strictly newer than the tombstone: stays closed
+						continue // not strictly newer than the same-session tombstone: stays closed
 					}
 				} else if b.sessionID == e.SessionID {
 					if e.Time.Before(b.eventTime) {

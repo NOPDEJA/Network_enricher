@@ -362,6 +362,94 @@ func TestTombstoneSameSecondTie(t *testing.T) {
 	})
 }
 
+// Cross-entity same-second handover: a close of the OLD entity and a same-second
+// open of a NEW entity (re-auth / lease-reassign at second resolution) must end
+// with the new entity attributed, in either arrival order. The strictly-newer
+// reopen guard applies only to the SAME entity, so it must not swallow this.
+func TestTombstoneCrossEntitySameSecondHandover(t *testing.T) {
+	t.Run("dhcp release MAC1 + assign MAC2 same second, both orders", func(t *testing.T) {
+		for _, order := range []string{"release-first", "assign-first"} {
+			t.Run(order, func(t *testing.T) {
+				s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+				mac1 := s.tok.MACToken("11:11:11:11:11:11")
+				mac2 := s.tok.MACToken("22:22:22:22:22:22")
+				// mac1 leased a step before the handover.
+				s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.13", MACToken: mac1})
+				release := DhcpEvent{EventTime: identBase.Add(time.Hour), EventID: 12, IP: "10.0.0.13", MACToken: mac1}
+				assign := DhcpEvent{EventTime: identBase.Add(time.Hour), EventID: 10, IP: "10.0.0.13", MACToken: mac2}
+				if order == "release-first" {
+					s.applyDHCP(release)
+					s.applyDHCP(assign)
+				} else {
+					s.applyDHCP(assign)
+					s.applyDHCP(release)
+				}
+				*clk = identBase.Add(2 * time.Hour)
+				if m, _ := s.Lookup("10.0.0.13"); m != mac2 {
+					t.Fatalf("mac = %q, want %q — same-second cross-MAC handover must leave the new MAC leased", m, mac2)
+				}
+			})
+		}
+	})
+
+	t.Run("radius stop S1 + start S2 same second, both orders", func(t *testing.T) {
+		for _, order := range []string{"stop-first", "start-first"} {
+			t.Run(order, func(t *testing.T) {
+				s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+				mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+				userA := s.tok.UserToken("alice")
+				userB := s.tok.UserToken("bob")
+				s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.14", MACToken: mac})
+				s.applyRADIUS(RadiusEvent{EventTime: identBase, AcctStatus: "Start", SessionID: "S1", UserToken: userA, MACToken: mac})
+				stop := RadiusEvent{EventTime: identBase.Add(time.Hour), AcctStatus: "Stop", SessionID: "S1", UserToken: userA, MACToken: mac}
+				start := RadiusEvent{EventTime: identBase.Add(time.Hour), AcctStatus: "Start", SessionID: "S2", UserToken: userB, MACToken: mac}
+				if order == "stop-first" {
+					s.applyRADIUS(stop)
+					s.applyRADIUS(start)
+				} else {
+					s.applyRADIUS(start)
+					s.applyRADIUS(stop)
+				}
+				*clk = identBase.Add(2 * time.Hour)
+				if m, u := s.Lookup("10.0.0.14"); m != mac || u != userB {
+					t.Fatalf("(%q,%q), want (%q,%q) — same-second cross-session handover must attribute the new user", m, u, mac, userB)
+				}
+			})
+		}
+	})
+}
+
+// A release/Stop for an IP/MAC with NO existing binding is a no-op: it must not
+// invent a tombstone that would block a later legitimate open. This is the
+// accepted residual gap of the tombstone design (the close guard requires an
+// existing binding to act on) — pinned here so a future refactor can't change it
+// silently.
+func TestTombstoneCloseWithNoBindingIsNoop(t *testing.T) {
+	t.Run("dhcp release then later assign binds normally", func(t *testing.T) {
+		s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+		mac := s.tok.MACToken("11:11:11:11:11:11")
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 12, IP: "10.0.0.15", MACToken: mac}) // release, no prior lease
+		s.applyDHCP(DhcpEvent{EventTime: identBase.Add(time.Hour), EventID: 10, IP: "10.0.0.15", MACToken: mac})
+		*clk = identBase.Add(2 * time.Hour)
+		if m, _ := s.Lookup("10.0.0.15"); m != mac {
+			t.Fatalf("mac = %q, want %q — a release with no prior lease must not tombstone the IP", m, mac)
+		}
+	})
+
+	t.Run("radius stop then later start binds normally", func(t *testing.T) {
+		s, clk := newClockedStore(t, 100*time.Hour, 100*time.Hour)
+		mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+		user := s.tok.UserToken("jdoe")
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.0.16", MACToken: mac})
+		s.applyRADIUS(RadiusEvent{EventTime: identBase, AcctStatus: "Stop", SessionID: "S1", UserToken: user, MACToken: mac}) // stop, no prior session
+		s.applyRADIUS(RadiusEvent{EventTime: identBase.Add(time.Hour), AcctStatus: "Start", SessionID: "S1", UserToken: user, MACToken: mac})
+		*clk = identBase.Add(2 * time.Hour)
+		if m, u := s.Lookup("10.0.0.16"); m != mac || u != user {
+			t.Fatalf("(%q,%q), want (%q,%q) — a Stop with no prior session must not tombstone the MAC", m, u, mac, user)
+		}
+	})
+}
+
 // A genuinely strictly-newer open after a close re-binds — tombstones must not
 // block a real reopen.
 func TestTombstoneStrictlyNewerReopens(t *testing.T) {
