@@ -128,7 +128,15 @@ func parseDTSTime(v string, loc *time.Location) (time.Time, bool) {
 	}
 	for _, layout := range dtsTimeLayouts {
 		if t, err := time.ParseInLocation(layout, v, loc); err == nil {
-			return t, true
+			// Truncate to whole seconds: the default DTS layout carries
+			// milliseconds but identity_radius_events.event_time is DateTime
+			// (second resolution) AND an ORDER BY key. Keeping the sub-second
+			// part would let the live store order two same-second events by a
+			// precision that never reaches ClickHouse, so live and cmd/trace
+			// would resolve the same tie differently. Truncate() is safe here:
+			// the value is wall-clock-only (no monotonic reading) and UTC-based
+			// truncation of a second is zone-independent.
+			return t.Truncate(time.Second), true
 		}
 	}
 	return time.Time{}, false
