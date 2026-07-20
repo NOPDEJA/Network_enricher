@@ -1,5 +1,7 @@
--- 002_identity_orderby.sql — widen the identity event tables' ORDER BY to the
--- full row, so ReplacingMergeTree stops collapsing genuinely distinct events.
+-- 002_identity_orderby.sql — PHASE 1 of 2: build and populate the replacement
+-- identity event tables. This file does NOT swap anything. The swap is a
+-- separate file (002b_identity_orderby_swap.sql) that you run only after
+-- reading the verification output below with your own eyes.
 --
 -- WHY
 --   identity_radius_events was ORDER BY (mac_token, event_time, session_id,
@@ -15,18 +17,24 @@
 --   Rows that were already collapsed under the old, narrower key are gone: the
 --   surviving row is the only copy that exists, and the lost variants cannot be
 --   reconstructed from it. There is no backfill and no down-migration that
---   restores them. Expect the post-migration count to EQUAL the pre-migration
---   count — the verification below asserts exactly that, and a mismatch means
---   something went wrong in the copy, not that data was recovered.
+--   restores them. Expect the post-copy count to EQUAL the pre-copy count.
 --
 -- ORDER BY is part of a MergeTree table's on-disk layout and cannot be widened
--- with ALTER TABLE, so this is a create-new / copy / RENAME swap.
+-- with ALTER TABLE, so this is a create-new / copy / swap.
 --
--- HOW TO RUN (writers should be stopped, or accept that events written between
--- the INSERT and the RENAME land in the old table and are dropped with it):
---   clickhouse-client --database <db> --queries-file migrations/002_identity_orderby.sql
--- Run the verification SELECTs and confirm the counts match BEFORE the final
--- DROPs at the bottom, which are commented out on purpose.
+-- Note the running enricher CANNOT fix a deployed table by itself: its
+-- bootstrap DDL (batchwriter.go, schemaStatements) is CREATE TABLE IF NOT
+-- EXISTS, a no-op once the table exists. Fresh installs get the correct key
+-- from that DDL; existing boxes need this migration.
+--
+-- HOW TO RUN
+--   Stop the enricher first, or accept that events written between the copy and
+--   the swap land in the old table and are lost when it is dropped.
+--
+--     clickhouse-client --database <db> --queries-file migrations/002_identity_orderby.sql
+--
+--   Then READ the two count results printed at the end. Continue to
+--   002b_identity_orderby_swap.sql ONLY if old and new match in both.
 
 -- ------------------------------------------------------------------
 -- identity_dhcp_events: + host_token
@@ -68,9 +76,20 @@ SELECT event_time, acct_status, session_id, user_token, mac_token, nas_ip
 FROM identity_radius_events FINAL;
 
 -- ------------------------------------------------------------------
--- Verify BEFORE the swap. Both rows of each result must be equal.
+-- MANUAL GATE — this does NOT fail closed.
+--
+-- These SELECTs only PRINT. Nothing here aborts the migration and nothing
+-- downstream is conditional on them: a --queries-file batch has no control
+-- flow, so THE OPERATOR IS THE GATE. Read both results before going further.
+--
+-- In each result the two rows must be EQUAL. If they are not, STOP — do not run
+-- 002b. Investigate, then DROP the two _new tables and start over. The original
+-- tables are still live and untouched at this point, so a failed copy costs
+-- nothing; that is the whole reason the swap lives in a separate file.
+--
 -- (The source is read with FINAL, so it is already deduped under the OLD key;
--- the new table under the WIDER key can only hold the same rows or more.)
+-- the new table under the WIDER key can hold the same rows, never fewer. A
+-- mismatch means the copy went wrong, NOT that evidence was recovered.)
 -- ------------------------------------------------------------------
 SELECT 'dhcp_old' AS which, count() FROM identity_dhcp_events FINAL
 UNION ALL
@@ -79,19 +98,3 @@ SELECT 'dhcp_new', count() FROM identity_dhcp_events_new FINAL;
 SELECT 'radius_old' AS which, count() FROM identity_radius_events FINAL
 UNION ALL
 SELECT 'radius_new', count() FROM identity_radius_events_new FINAL;
-
--- ------------------------------------------------------------------
--- Atomic swap.
--- ------------------------------------------------------------------
-RENAME TABLE
-    identity_dhcp_events       TO identity_dhcp_events_old,
-    identity_dhcp_events_new   TO identity_dhcp_events,
-    identity_radius_events     TO identity_radius_events_old,
-    identity_radius_events_new TO identity_radius_events;
-
--- ------------------------------------------------------------------
--- Drop the originals only after the swapped tables have been sanity-checked
--- against live queries (cmd/trace -who). Uncomment deliberately.
--- ------------------------------------------------------------------
--- DROP TABLE identity_dhcp_events_old;
--- DROP TABLE identity_radius_events_old;
