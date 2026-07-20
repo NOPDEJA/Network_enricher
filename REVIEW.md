@@ -85,7 +85,23 @@ a schema defect losing raw events outright. Three changes, all off the hot path:
   second-resolution `DateTime` column.
 
 Verified: `go build`/`go vet`/`go test ./...` green; the 11 spec cases are
-table-driven and same-timestamp batches are asserted over **every permutation**;
-the regression cases were confirmed red against the previous implementation
-before the fix landed. `go test -race` is pending — it runs on the Linux box, as
-this dev machine has no 64-bit CGO.
+table-driven and same-timestamp batches are asserted over **every permutation**.
+
+On the regression evidence, precisely: the same-timestamp cases were run against
+the previous sequential fold and confirmed **red** — the F1-replay case (DHCP and
+RADIUS forms), `O(A),O(B),C(B)`, the same-entity tie, the two-open ambiguity
+case, and the RADIUS user-conflict case. The **deadline-carry** case is *not* in
+that set: the old fold answers it correctly for the wrong reason, since its
+single-slot state can never hold two candidates at once, so no input
+distinguishes old from new on deadline carry alone. That case is pinned by
+mutation testing instead — recomputing the deadline on a close-only batch makes
+it fail with exactly the wrong answer the rule exists to prevent.
+
+The bootstrap DDL in `batchwriter.go` (`schemaStatements`, the real fresh-install
+path — `schema.sql` is documentation) carried the same short keys and is now
+fixed and pinned by a test; the miss is worth noting, because every statement
+there is `CREATE TABLE IF NOT EXISTS`, so a wrong key is invisible on an existing
+box and only appears on a rebuild.
+
+`go test -race` is pending — it runs on the Linux box, as this dev machine has no
+64-bit CGO.
