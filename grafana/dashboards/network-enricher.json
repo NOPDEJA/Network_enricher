@@ -392,6 +392,120 @@
           "rawSql": "SELECT client_ip, count() AS resolutions, toString(min(event_time)) AS first_seen, toString(max(event_time)) AS last_seen FROM dns_events WHERE $__timeFilter(event_time) AND qname = '${qname}' AND answer_ip = '${answer_ip}' GROUP BY client_ip ORDER BY resolutions DESC LIMIT 50"
         }
       ]
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "ClickHouse on disk (all tables)",
+      "description": "Total compressed size of every active part in the enricher database. Read from system.parts, which has no time column — this panel and the rest of the storage row IGNORE the time picker and always show current total size, not size within the selected range.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 64 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "bytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(bytes_on_disk) AS on_disk FROM system.parts WHERE active AND database = currentDatabase()"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "DNS evidence on disk",
+      "description": "Compressed size of dns_events alone — the marginal storage cost of the DNS forensic capability.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 64 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "bytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(bytes_on_disk) AS dns_on_disk FROM system.parts WHERE active AND database = currentDatabase() AND table = 'dns_events'"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Bytes per DNS event",
+      "description": "Compressed cost of storing one DNS resolution. Multiply by expected resolutions per client per day to size a retention window.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 64 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "bytes", "decimals": 1 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(bytes_on_disk) / greatest(sum(rows), 1) AS bytes_per_event FROM system.parts WHERE active AND database = currentDatabase() AND table = 'dns_events'"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Bytes per enriched flow",
+      "description": "Compressed cost of one fully enriched flow record (GeoIP, ASN, tenant, threat columns included). The comparison figure for the DNS cost to its left.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 64 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "bytes", "decimals": 1 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT sum(bytes_on_disk) / greatest(sum(rows), 1) AS bytes_per_flow FROM system.parts WHERE active AND database = currentDatabase() AND table = 'flows'"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "table",
+      "title": "Storage by table (compression and cost per row)",
+      "description": "Every table in the enricher database, largest first. 'ratio' is uncompressed/compressed. The flows_1m and flows_1h rollups are deliberately kept without a TTL: together they are a fraction of a percent of raw storage, so long-term trend history survives after raw records expire at 90 days.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 68 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT table, formatReadableSize(sum(bytes_on_disk)) AS on_disk, formatReadableSize(sum(data_uncompressed_bytes)) AS uncompressed, round(sum(data_uncompressed_bytes) / greatest(sum(bytes_on_disk), 1), 1) AS ratio, sum(rows) AS row_count, round(sum(bytes_on_disk) / greatest(sum(rows), 1), 1) AS bytes_per_row FROM system.parts WHERE active AND database = currentDatabase() GROUP BY table ORDER BY sum(bytes_on_disk) DESC"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "DNS storage cost by column",
+      "description": "Where the bytes in dns_events actually go. client_ip compresses ~170x because it is the first ORDER BY key, so identical values sit adjacent on disk — a concrete illustration of why the sort key drives storage cost, not just query speed.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 68 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "share_pct" }, "properties": [ { "id": "unit", "value": "percent" } ] } ] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT column, formatReadableSize(sum(column_data_compressed_bytes)) AS compressed, round(sum(column_data_uncompressed_bytes) / greatest(sum(column_data_compressed_bytes), 1), 1) AS ratio, round(sum(column_data_compressed_bytes) / greatest((SELECT sum(rows) FROM system.parts WHERE active AND database = currentDatabase() AND table = 'dns_events'), 1), 2) AS bytes_per_event, round(100 * sum(column_data_compressed_bytes) / greatest((SELECT sum(column_data_compressed_bytes) FROM system.parts_columns WHERE active AND database = currentDatabase() AND table = 'dns_events'), 1), 1) AS share_pct FROM system.parts_columns WHERE active AND database = currentDatabase() AND table = 'dns_events' GROUP BY column ORDER BY sum(column_data_compressed_bytes) DESC"
+        }
+      ]
     }
   ]
 }
