@@ -356,12 +356,31 @@
       ]
     },
     {
+      "id": 20,
+      "type": "table",
+      "title": "Answer IPs for $qname (pick one for the panel below)",
+      "description": "Candidate answered IPs for the domain variable, most-resolved first. A CDN name answers with several IPs, so the forensic panel below needs one specific value — copy the answer_ip you want into the 'Forensic: answered IP' variable. Timestamps are strings on purpose: a DateTime column makes the ClickHouse plugin render this table as a time series.",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
+          "refId": "A",
+          "editorType": "sql",
+          "queryType": "table",
+          "rawSql": "SELECT answer_ip, count() AS resolutions, uniqExact(client_ip) AS clients, toString(min(event_time)) AS first_seen, toString(max(event_time)) AS last_seen FROM dns_events WHERE $__timeFilter(event_time) AND qname = '${qname}' AND answer_ip != '' GROUP BY answer_ip ORDER BY resolutions DESC LIMIT 20"
+        }
+      ]
+    },
+    {
       "id": 19,
       "type": "table",
       "title": "Forensic lookup: who resolved $qname → $answer_ip",
       "description": "Set the two dashboard variables above (domain + answered IP), and this panel answers the legal-request scenario: which clients resolved that name to that IP, and when. Client IPs are internal RFC1918 addresses; identity-join returns pseudonymous tokens instead once wired in.",
       "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 56 },
       "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [] },
       "options": { "showHeader": true },
       "targets": [
