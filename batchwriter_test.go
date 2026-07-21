@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -246,5 +247,67 @@ func TestConcurrentAddNoRace(t *testing.T) {
 	mu.Unlock()
 	if total != workers*perWorker {
 		t.Fatalf("rows sent = %d, want %d (rows lost under concurrency)", total, workers*perWorker)
+	}
+}
+
+// The enricher bootstraps its own tables via applySchema (NewBatchWriter), so
+// schemaStatements — not schema.sql — is what a fresh ClickHouse volume
+// actually gets. Both files carried a SHORT ORDER BY on the identity tables:
+// ReplacingMergeTree then collapses two genuinely distinct same-second events
+// that differ only in an omitted column, which is raw evidence loss in the
+// forensic source of truth (a same-second Interim-Update pair differing only by
+// user_token would reach cmd/trace as ONE row, and it would confidently report
+// a single user instead of ambiguity).
+//
+// Every CREATE here is IF NOT EXISTS, so a wrong key is invisible on an
+// existing box and only bites on a rebuild. This test pins the two keys against
+// their tables' full column lists so schema.sql and this DDL cannot drift apart
+// silently again.
+func TestSchemaIdentityOrderByIsFullRow(t *testing.T) {
+	tests := []struct {
+		table   string
+		columns []string
+		wantKey string
+	}{
+		{
+			table:   "identity_dhcp_events",
+			columns: []string{"event_time", "event_id", "ip", "mac_token", "host_token"},
+			wantKey: "ORDER BY (ip, event_time, event_id, mac_token, host_token)",
+		},
+		{
+			table:   "identity_radius_events",
+			columns: []string{"event_time", "acct_status", "session_id", "user_token", "mac_token", "nas_ip"},
+			wantKey: "ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.table, func(t *testing.T) {
+			var ddl string
+			for _, stmt := range schemaStatements {
+				if strings.Contains(stmt, "CREATE TABLE IF NOT EXISTS "+tc.table+" ") {
+					ddl = stmt
+					break
+				}
+			}
+			if ddl == "" {
+				t.Fatalf("no CREATE TABLE statement for %s in schemaStatements", tc.table)
+			}
+			if !strings.Contains(ddl, tc.wantKey) {
+				t.Fatalf("%s: bootstrap DDL must use the full-row ORDER BY\nwant: %s\ngot DDL:\n%s",
+					tc.table, tc.wantKey, ddl)
+			}
+			// Independently of the literal above: every column the table
+			// declares must appear in the key, or FINAL can collapse distinct
+			// rows. This is the invariant, not the exact string.
+			key := ddl[strings.Index(ddl, "ORDER BY ("):]
+			key = key[:strings.Index(key, ")")+1]
+			for _, col := range tc.columns {
+				if !strings.Contains(key, col) {
+					t.Errorf("%s: column %q missing from ORDER BY %s — distinct same-second events differing only in %q would collapse under FINAL",
+						tc.table, col, key, col)
+				}
+			}
+		})
 	}
 }

@@ -166,9 +166,14 @@ func NewBatchWriter(addr, database, username, password string) (*BatchWriter, er
 	return w, nil
 }
 
-// applySchema runs the DDL statements to create tables if they don't exist.
-func applySchema(conn driver.Conn) error {
-	stmts := []string{
+// schemaStatements is the DDL the enricher bootstraps itself with. This — NOT
+// schema.sql — is the real fresh-install path (NewBatchWriter -> applySchema);
+// schema.sql documents the same tables for operators. The two MUST be kept in
+// lockstep: a divergence here is invisible on an existing box (every CREATE is
+// IF NOT EXISTS) and only shows up on a fresh ClickHouse volume, which is
+// exactly when nobody is looking. It is a package-level var so tests can assert
+// the parts that are easy to get silently wrong (see TestSchemaOrderByFullRow).
+var schemaStatements = []string{
 		`CREATE TABLE IF NOT EXISTS flows (
 			timestamp        DateTime,
 			tenant_id        UInt32,
@@ -242,6 +247,15 @@ func applySchema(conn driver.Conn) error {
 		// re-inserts every event — identical rows collapse on merge. Dedup is
 		// eventual (merge-time), so exact forensic queries should use FINAL or
 		// GROUP BY.
+		//
+		// "Fully-identifying" means EVERY column is in the ORDER BY, and both keys
+		// below once got this WRONG (dhcp omitted host_token, radius omitted
+		// user_token and nas_ip). The cost is not duplicate rows, it is the
+		// opposite: two GENUINELY DISTINCT same-second events differing only in an
+		// omitted column collapse into one under merge/FINAL, destroying raw
+		// evidence in the forensic source of truth. Keep these identical to
+		// schema.sql; migrations/002_identity_orderby.sql fixes already-deployed
+		// tables, which these IF NOT EXISTS statements cannot.
 		`CREATE TABLE IF NOT EXISTS identity_dhcp_events (
 			event_time DateTime,
 			event_id   UInt16,
@@ -250,7 +264,7 @@ func applySchema(conn driver.Conn) error {
 			host_token String
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
-		ORDER BY (ip, event_time, event_id, mac_token)
+		ORDER BY (ip, event_time, event_id, mac_token, host_token)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS identity_radius_events (
@@ -262,13 +276,14 @@ func applySchema(conn driver.Conn) error {
 			nas_ip      String
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
-		ORDER BY (mac_token, event_time, session_id, acct_status)
+		ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)
 		TTL event_time + INTERVAL 90 DAY DELETE`,
 
 		// DNS event table: append-only forensic record of hostnames clients
 		// resolved. Hostnames stay in the CLEAR (not personal data here). Same
 		// ReplacingMergeTree + fully-identifying ORDER BY as the identity tables so
-		// restart-replay dedups on merge.
+		// restart-replay dedups on merge. This key does list every column — it was
+		// the two identity keys above, not this one, that were short.
 		`CREATE TABLE IF NOT EXISTS dns_events (
 			event_time  DateTime,
 			client_ip   String,
@@ -333,10 +348,12 @@ func applySchema(conn driver.Conn) error {
 			count()      AS flow_count
 		FROM flows
 		GROUP BY timestamp, tenant_id, src_country, dst_country, protocol`,
-	}
+}
 
+// applySchema runs the DDL statements to create tables if they don't exist.
+func applySchema(conn driver.Conn) error {
 	ctx := context.Background()
-	for _, stmt := range stmts {
+	for _, stmt := range schemaStatements {
 		if err := conn.Exec(ctx, stmt); err != nil {
 			return err
 		}

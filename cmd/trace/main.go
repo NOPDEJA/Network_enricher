@@ -204,31 +204,31 @@ WHERE event_time BETWEEN ? AND ?`)
 // buildDHCPQuery is who-mode query 2: every lease event for the candidate client
 // IPs, over a window widened back by maxLease so a lease that opened before the
 // DNS window still covers the resolution instant. FINAL is mandatory (ReplacingMergeTree).
-// The ORDER BY repeats the table's full ORDER BY (schema.sql): event_time is
-// second-resolution, so without the tie-breakers a same-second assign+release
-// pair could come back in either order and flip the reducer's outcome per run.
+// The ORDER BY repeats the table's full ORDER BY (schema.sql) and must move in
+// lockstep with it. The reducer no longer depends on it for correctness —
+// dhcpBindingAt folds same-timestamp events as an order-independent SET — but a
+// stable order keeps output and any dump of these rows reproducible.
 func buildDHCPQuery(ips []string, from, to time.Time) (string, []any) {
 	const q = `SELECT event_time, event_id, ip, mac_token
 FROM identity_dhcp_events FINAL
 WHERE ip IN (?) AND event_time BETWEEN ? AND ?
-ORDER BY ip, event_time, event_id, mac_token`
+ORDER BY ip, event_time, event_id, mac_token, host_token`
 	return q, []any{ips, from, to}
 }
 
 // buildRADIUSQuery is who-mode query 3: every accounting event for the candidate
 // mac_tokens, over a window widened back by maxSession. FINAL is mandatory.
-// Full-table ORDER BY for deterministic same-second ties, as in buildDHCPQuery.
-// session_id sorts before acct_status, so the acct_status tie-break only orders
-// events WITHIN one session_id: a same-second Start+Stop of the SAME session
-// deterministically ends closed (Stop sorts after Start/Interim-Update). A
-// same-second CROSS-session tie (Stop S1 + Start S2) converges on the newer
-// session open regardless of that ordering — the reducer's cross-session
-// not-older rule (radiusBindingAt) rebinds either way.
+// Full-table ORDER BY, as in buildDHCPQuery: it mirrors schema.sql and must
+// move with it. Same-second ties are resolved by radiusBindingAt's batch fold,
+// not by this ordering — a same-second Start+Stop of the SAME session ends
+// closed and a cross-session handover converges on the new session whatever
+// order the rows arrive in. user_token and nas_ip are in the key so that
+// distinct same-second events are not collapsed by FINAL.
 func buildRADIUSQuery(macTokens []string, from, to time.Time) (string, []any) {
 	const q = `SELECT event_time, acct_status, session_id, user_token, mac_token
 FROM identity_radius_events FINAL
 WHERE mac_token IN (?) AND event_time BETWEEN ? AND ?
-ORDER BY mac_token, event_time, session_id, acct_status`
+ORDER BY mac_token, event_time, session_id, acct_status, user_token, nas_ip`
 	return q, []any{macTokens, from, to}
 }
 
@@ -502,6 +502,13 @@ type whoRow struct {
 	LastSeen    time.Time `json:"last_seen"`
 	MACToken    string    `json:"mac_token"`
 	UserToken   string    `json:"user_token"`
+
+	// Ambiguous means the evidence held several equally-valid candidates at
+	// LastSeen (same-second opens that nothing closed). It is NOT the same as an
+	// empty token, which means no trusted binding covered that instant — the
+	// output must keep the two apart. See identity_join.go.
+	MACAmbiguous  bool `json:"mac_ambiguous"`
+	UserAmbiguous bool `json:"user_ambiguous"`
 }
 
 // runWho executes the three-query who-mode join: DNS candidates -> DHCP leases
@@ -563,8 +570,8 @@ func runWho(ctx context.Context, conn driver.Conn, f filter, asJSON bool) error 
 		// Reduce each candidate's device as-of its last_seen.
 		macSet := make(map[string]struct{})
 		for i := range cands {
-			mac := dhcpBindingAt(dhcp, cands[i].ClientIP, cands[i].LastSeen, maxLease)
-			cands[i].MACToken = mac
+			mac, ambiguous := dhcpBindingAt(dhcp, cands[i].ClientIP, cands[i].LastSeen, maxLease)
+			cands[i].MACToken, cands[i].MACAmbiguous = mac, ambiguous
 			if mac != "" {
 				macSet[mac] = struct{}{}
 			}
@@ -595,8 +602,11 @@ func runWho(ctx context.Context, conn driver.Conn, f filter, asJSON bool) error 
 			radRows.Close()
 
 			for i := range cands {
-				if cands[i].MACToken != "" {
-					cands[i].UserToken = radiusBindingAt(rad, cands[i].MACToken, cands[i].LastSeen, maxSession)
+				// An ambiguous device has no single mac_token to key the
+				// session join on, so the user half is not attempted at all —
+				// the device ambiguity is the finding.
+				if cands[i].MACToken != "" && !cands[i].MACAmbiguous {
+					cands[i].UserToken, cands[i].UserAmbiguous = radiusBindingAt(rad, cands[i].MACToken, cands[i].LastSeen, maxSession)
 				}
 			}
 		}
@@ -634,7 +644,7 @@ func renderWho(rows []whoRow, asJSON bool) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			r.ClientIP, r.QName, r.AnswerIP, r.Resolutions,
 			r.FirstSeen.Format("2006-01-02 15:04:05"), r.LastSeen.Format("2006-01-02 15:04:05"),
-			unknownIfEmpty(r.MACToken), unknownIfEmpty(r.UserToken))
+			tokenStatus(r.MACToken, r.MACAmbiguous), tokenStatus(r.UserToken, r.UserAmbiguous))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -643,10 +653,16 @@ func renderWho(rows []whoRow, asJSON bool) error {
 	return nil
 }
 
-// unknownIfEmpty renders an unresolved token as a clear placeholder in the table
-// (the JSON form keeps the empty string).
-func unknownIfEmpty(s string) string {
-	if s == "" {
+// tokenStatus renders an unresolved token as a clear placeholder in the table
+// (the JSON form keeps the empty string plus its *_ambiguous flag). "ambiguous"
+// and "unknown" are deliberately distinct: unknown means the evidence shows
+// nothing bound at that instant, ambiguous means it shows several equally-valid
+// candidates and does not pick between them.
+func tokenStatus(s string, ambiguous bool) string {
+	switch {
+	case ambiguous:
+		return "ambiguous at that time"
+	case s == "":
 		return "unknown at that time"
 	}
 	return s

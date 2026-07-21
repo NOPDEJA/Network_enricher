@@ -51,9 +51,12 @@ func TestParseNPSFixture(t *testing.T) {
 		session string
 		when    time.Time
 	}{
-		{"Start", "SESSION-A", mustTime(t, dtsTimeLayouts[0], "07/08/2026 09:15:00.100")},
-		{"Interim-Update", "SESSION-A", mustTime(t, dtsTimeLayouts[0], "07/08/2026 09:20:00.000")},
-		{"Stop", "SESSION-A", mustTime(t, dtsTimeLayouts[0], "07/08/2026 10:00:00.000")},
+		// The fixture's Start carries ".100"; parse truncates to whole seconds to
+		// match the DateTime column (see TestParseNPSTruncatesToSecond), so the
+		// expected times use the second-resolution layout.
+		{"Start", "SESSION-A", mustTime(t, dtsTimeLayouts[1], "07/08/2026 09:15:00")},
+		{"Interim-Update", "SESSION-A", mustTime(t, dtsTimeLayouts[1], "07/08/2026 09:20:00")},
+		{"Stop", "SESSION-A", mustTime(t, dtsTimeLayouts[1], "07/08/2026 10:00:00")},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parsed %d events, want %d", len(got), len(want))
@@ -121,6 +124,56 @@ func TestParseNPSLineEdgeCases(t *testing.T) {
 			}
 			if (err != nil) != tc.wantErr {
 				t.Errorf("err = %v, want error=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// NPS's default DTS Timestamp carries milliseconds, but
+// identity_radius_events.event_time is DateTime (whole seconds) AND part of the
+// table's ORDER BY. If the parser kept the sub-second part, the live store would
+// order two same-second events by a precision that never reaches ClickHouse,
+// and cmd/trace — reading the truncated values back — would resolve the same tie
+// differently. Truncate at parse so both sides see identical timestamps.
+func TestParseNPSTruncatesToSecond(t *testing.T) {
+	tok := newTestTokenizer(t, "k")
+
+	tests := []struct {
+		name string
+		ts   string
+		want time.Time
+	}{
+		{
+			name: "milliseconds are dropped, not rounded up",
+			ts:   "07/08/2026 09:15:00.999",
+			want: time.Date(2026, 7, 8, 9, 15, 0, 0, time.UTC),
+		},
+		{
+			name: "milliseconds are dropped, not rounded down to the wrong second",
+			ts:   "07/08/2026 09:15:01.001",
+			want: time.Date(2026, 7, 8, 9, 15, 1, 0, time.UTC),
+		},
+		{
+			name: "a millisecond-less timestamp is unaffected",
+			ts:   "07/08/2026 09:15:02",
+			want: time.Date(2026, 7, 8, 9, 15, 2, 0, time.UTC),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `<Event><Timestamp data_type="4">` + tc.ts +
+				`</Timestamp><Acct-Status-Type data_type="0">1</Acct-Status-Type>` +
+				`<Acct-Session-Id data_type="1">S1</Acct-Session-Id></Event>`
+			ev, ok, err := parseNPSLine(line, tok, time.UTC)
+			if err != nil || !ok {
+				t.Fatalf("parseNPSLine: ok=%v err=%v", ok, err)
+			}
+			if !ev.EventTime.Equal(tc.want) {
+				t.Fatalf("EventTime = %s, want %s", ev.EventTime, tc.want)
+			}
+			if ev.EventTime.Nanosecond() != 0 {
+				t.Fatalf("EventTime has a sub-second component: %d ns", ev.EventTime.Nanosecond())
 			}
 		})
 	}

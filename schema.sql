@@ -106,6 +106,12 @@ ALTER TABLE flows
 -- and re-inserts every event. With a fully-identifying ORDER BY, the
 -- duplicate rows collapse on merge. Dedup is EVENTUAL (happens at
 -- merge time), so exact forensic queries must use FINAL or GROUP BY.
+--
+-- "Fully-identifying" means EVERY column is in the ORDER BY. Omitting
+-- one makes ReplacingMergeTree collapse two genuinely distinct events
+-- that differ only in that column — raw evidence loss in the forensic
+-- source of truth. Both keys below were widened for this reason; see
+-- migrations/002_identity_orderby.sql (forward-only).
 -- ============================================================
 CREATE TABLE IF NOT EXISTS identity_dhcp_events (
     event_time DateTime,
@@ -116,7 +122,7 @@ CREATE TABLE IF NOT EXISTS identity_dhcp_events (
 )
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
-ORDER BY (ip, event_time, event_id, mac_token)
+ORDER BY (ip, event_time, event_id, mac_token, host_token)
 TTL event_time + INTERVAL 90 DAY DELETE;
 
 CREATE TABLE IF NOT EXISTS identity_radius_events (
@@ -129,7 +135,7 @@ CREATE TABLE IF NOT EXISTS identity_radius_events (
 )
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
-ORDER BY (mac_token, event_time, session_id, acct_status)
+ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)
 TTL event_time + INTERVAL 90 DAY DELETE;
 
 
