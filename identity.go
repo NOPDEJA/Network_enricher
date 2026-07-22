@@ -37,7 +37,7 @@ type IdentityStore struct {
 	maxLease   time.Duration // hard cap on how long a lease is trusted without renewal
 	maxSession time.Duration // idle bound on a RADIUS session with no Stop
 
-	tok     *Tokenizer
+	tok     identityTokenizer
 	npsDir  string
 	dhcpDir string
 	npsLoc  *time.Location // zone the NPS log's naive timestamps are in
@@ -71,7 +71,7 @@ type macBinding struct {
 // NewIdentityStore builds the store. conn may be nil (ClickHouse unavailable),
 // in which case events are still applied to the in-memory view for live tagging
 // but not persisted.
-func NewIdentityStore(tok *Tokenizer, npsDir, dhcpDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+func NewIdentityStore(tok identityTokenizer, npsDir, dhcpDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
 	if npsLoc == nil {
 		npsLoc = time.UTC
 	}
