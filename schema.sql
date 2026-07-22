@@ -10,7 +10,7 @@
 -- time-range queries are fast; arbitrary IP scans are slower —
 -- acceptable for this use case.
 --
--- TTL: drop rows older than 90 days to keep storage bounded.
+-- TTL: drop rows older than 120 days to keep storage bounded (>90d legal floor).
 CREATE TABLE IF NOT EXISTS flows (
     timestamp        DateTime,
     -- tenant_id/tenant_name attribute the SOURCE address (outbound traffic);
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS flows (
 ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (tenant_id, timestamp, src_ip, dst_ip)
-TTL timestamp + INTERVAL 90 DAY DELETE;
+TTL timestamp + INTERVAL 120 DAY DELETE;
 
 -- Migration for tables created before dst-side tenant attribution.
 ALTER TABLE flows
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS identity_dhcp_events (
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (ip, event_time, event_id, mac_token, host_token)
-TTL event_time + INTERVAL 90 DAY DELETE;
+TTL event_time + INTERVAL 120 DAY DELETE;
 
 CREATE TABLE IF NOT EXISTS identity_radius_events (
     event_time  DateTime,
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS identity_radius_events (
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)
-TTL event_time + INTERVAL 90 DAY DELETE;
+TTL event_time + INTERVAL 120 DAY DELETE;
 
 
 -- ============================================================
@@ -167,7 +167,7 @@ PARTITION BY toYYYYMMDD(event_time)
 -- line (same port, same ttl) still collapses to one row — keeping restart-replay
 -- idempotent.
 ORDER BY (client_ip, qname, answer_ip, event_time, qtype, client_port, ttl)
-TTL event_time + INTERVAL 90 DAY DELETE;
+TTL event_time + INTERVAL 120 DAY DELETE;
 
 
 -- ============================================================

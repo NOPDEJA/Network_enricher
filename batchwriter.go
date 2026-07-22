@@ -217,7 +217,7 @@ var schemaStatements = []string{
 		) ENGINE = MergeTree()
 		PARTITION BY toYYYYMMDD(timestamp)
 		ORDER BY (tenant_id, timestamp, src_ip, dst_ip)
-		TTL timestamp + INTERVAL 90 DAY DELETE`,
+		TTL timestamp + INTERVAL 120 DAY DELETE`,
 
 		// Migration for tables created before dst-side tenant attribution:
 		// CREATE IF NOT EXISTS above is a no-op on them, so add the columns here.
@@ -265,7 +265,7 @@ var schemaStatements = []string{
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
 		ORDER BY (ip, event_time, event_id, mac_token, host_token)
-		TTL event_time + INTERVAL 90 DAY DELETE`,
+		TTL event_time + INTERVAL 120 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS identity_radius_events (
 			event_time  DateTime,
@@ -277,7 +277,7 @@ var schemaStatements = []string{
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
 		ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)
-		TTL event_time + INTERVAL 90 DAY DELETE`,
+		TTL event_time + INTERVAL 120 DAY DELETE`,
 
 		// DNS event table: append-only forensic record of hostnames clients
 		// resolved. Hostnames stay in the CLEAR (not personal data here). Same
@@ -295,7 +295,7 @@ var schemaStatements = []string{
 		) ENGINE = ReplacingMergeTree()
 		PARTITION BY toYYYYMMDD(event_time)
 		ORDER BY (client_ip, qname, answer_ip, event_time, qtype, client_port, ttl)
-		TTL event_time + INTERVAL 90 DAY DELETE`,
+		TTL event_time + INTERVAL 120 DAY DELETE`,
 
 		`CREATE TABLE IF NOT EXISTS flows_1m (
 			timestamp    DateTime,
