@@ -52,7 +52,7 @@ const (
 // parse as an integer, so they fall through as silent skips without needing to
 // detect where the CSV section begins — which also survives log rotation, where
 // a scan may start mid-file with no preamble at all.
-func parseDHCPLine(line string, tok *Tokenizer, loc *time.Location) (DhcpEvent, bool, error) {
+func parseDHCPLine(line string, tok identityTokenizer, loc *time.Location) (DhcpEvent, bool, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return DhcpEvent{}, false, nil

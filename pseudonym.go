@@ -10,6 +10,44 @@ import (
 	"strings"
 )
 
+// identityTokenizer is the narrow token surface the NPS/DHCP parsers and the
+// IdentityStore share. Both the salted-hash *Tokenizer (normal mode) and the
+// verbatim *UpstreamPseudonymTokenizer (IDENTITY_UPSTREAM_ANONYMIZED mode)
+// satisfy it, so the same ingestion path drives either without a mode branch.
+type identityTokenizer interface {
+	MACToken(mac string) string
+	UserToken(user string) string
+	HostToken(host string) string
+}
+
+// UpstreamPseudonymTokenizer is the pass-through tokenizer for
+// IDENTITY_UPSTREAM_ANONYMIZED mode: the NPS/DHCP logs already carry pseudonyms
+// scrubbed UPSTREAM of us (User-Name, MAC, and DHCP hostname all confirmed
+// anonymized by the mentor's side), so we must persist them VERBATIM. Re-hashing
+// an already-pseudonymous value with our salt would produce a token the mentor's
+// own pseudonym<->person mapping can't reverse against our columns.
+//
+// Unlike *Tokenizer it does NO normalization or hashing: the real normalizers
+// are lossy and format-specific (a MAC must reduce to exactly 12 hex or silently
+// becomes "", usernames get realm/case stripped, hostnames get lowercased), so
+// running a pseudonym through them would mangle or drop it — the opposite of
+// "verbatim". Every method returns its input UNCHANGED, byte-for-byte, with no
+// trimming of its own — but note the NPS parser TrimSpace's every field before the
+// tokenizer is called (npslog.go), so an NPS-sourced pseudonym is verbatim EXCEPT
+// for surrounding whitespace. That is an accepted normalization (see below); no
+// real pseudonym scheme relies on significant leading/trailing whitespace.
+//
+// CHARSET CONSTRAINT: an upstream pseudonym must contain NO commas (DHCP parsing
+// is a naive CSV split in dhcplog.go, so a comma would shift columns), NO control
+// characters (they would corrupt cmd/trace's tabular output), and NO significant
+// leading/trailing whitespace (the NPS field extraction strips it). This is
+// asserted by the operator who enables the flag, not verified here.
+type UpstreamPseudonymTokenizer struct{}
+
+func (UpstreamPseudonymTokenizer) MACToken(mac string) string   { return mac }
+func (UpstreamPseudonymTokenizer) UserToken(user string) string { return user }
+func (UpstreamPseudonymTokenizer) HostToken(host string) string { return host }
+
 // Tokenizer turns sensitive identifiers (usernames, MACs, hostnames) into
 // stable pseudonymous tokens so raw values never reach ClickHouse, logs, or
 // metrics. The token is the HMAC-SHA256 of the normalized identifier, keyed by

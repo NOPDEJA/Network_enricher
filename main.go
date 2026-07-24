@@ -266,19 +266,53 @@ func main() {
 		writer.StartFlushTimer(ctx)
 	}
 
-	// Identity (who-side) enrichment — optional and FAIL CLOSED. Enabled only when
-	// IDENTITY_TOKEN_KEY_FILE plus at least one log dir are set. If the token key
-	// can't be loaded the subsystem stays off entirely so no raw username/MAC can
-	// ever be written — but flows keep flowing (identity stays nil).
+	// Identity (who-side) enrichment — optional and FAIL CLOSED. Normal mode is
+	// enabled only when IDENTITY_TOKEN_KEY_FILE plus at least one log dir are set;
+	// if the token key can't be loaded the subsystem stays off entirely so no raw
+	// username/MAC can ever be written. IDENTITY_UPSTREAM_ANONYMIZED=true switches
+	// to pass-through mode: the logs already carry pseudonyms scrubbed upstream, so
+	// values are stored VERBATIM with no key required (see UpstreamPseudonymTokenizer).
+	// Flows keep flowing regardless (identity stays nil on any failure).
+	//
+	// STRICT-true: only the exact literal "true" enables pass-through — a non-empty
+	// value must not silently turn off local tokenization.
 	var identity *IdentityStore
 	keyFile := os.Getenv("IDENTITY_TOKEN_KEY_FILE")
 	npsDir := os.Getenv("IDENTITY_NPS_DIR")
 	dhcpDir := os.Getenv("IDENTITY_DHCP_DIR")
-	if keyFile != "" && (npsDir != "" || dhcpDir != "") {
-		tok, terr := NewTokenizer(keyFile)
-		if terr != nil {
-			slog.Error("identity token key load failed, continuing without identity (fail closed)", "err", terr)
-		} else {
+	upstreamAnon := os.Getenv("IDENTITY_UPSTREAM_ANONYMIZED") == "true"
+
+	mode, fatal := decideIdentityMode(upstreamAnon, keyFile != "", npsDir != "" || dhcpDir != "")
+	switch {
+	case fatal:
+		// Both the pass-through flag and a token key are set. Refuse to pick a
+		// winner: one stores verbatim, the other salts — either silent choice is a
+		// privacy downgrade or a silently-broken mapping (matches the fail-loud TZ
+		// precedent above).
+		slog.Error("identity: IDENTITY_UPSTREAM_ANONYMIZED=true is incompatible with IDENTITY_TOKEN_KEY_FILE — one stores upstream pseudonyms verbatim, the other salts; unset exactly one")
+		os.Exit(1)
+	case mode == identityOff:
+		slog.Info("identity enrichment disabled", "reason", "no log dir set, or normal mode without IDENTITY_TOKEN_KEY_FILE")
+	default:
+		var tok identityTokenizer
+		switch mode {
+		case identityPassthrough:
+			tok = UpstreamPseudonymTokenizer{}
+			// Loud, because this silently stores whatever the logs contain: if the
+			// operator's "already anonymized" assertion is wrong, or the dirs point
+			// at un-scrubbed logs, raw identifiers land in ClickHouse. Log resolved
+			// ABSOLUTE paths so a wrong-dir misconfiguration is visible.
+			slog.Warn("identity: UPSTREAM-ANONYMIZED pass-through — storing upstream pseudonyms VERBATIM with NO local tokenization; operator asserts inputs are already anonymized",
+				"nps_dir", absPathForLog(npsDir), "dhcp_dir", absPathForLog(dhcpDir))
+		case identityHashed:
+			t, terr := NewTokenizer(keyFile)
+			if terr != nil {
+				slog.Error("identity token key load failed, continuing without identity (fail closed)", "err", terr)
+			} else {
+				tok = t
+			}
+		}
+		if tok != nil {
 			// Resolve the log timezones before wiring the store. An invalid zone is
 			// fatal: a silent UTC fallback would mis-join local-time forensic logs.
 			npsLoc, nerr := logLocation("NPS_LOG_TZ")
@@ -300,10 +334,9 @@ func main() {
 				durEnv("IDENTITY_MAX_SESSION", 24*time.Hour),
 				conn)
 			identity.StartPoller(ctx)
-			slog.Info("identity enrichment enabled", "nps_dir", npsDir, "dhcp_dir", dhcpDir, "clickhouse", conn != nil)
+			slog.Info("identity enrichment enabled", "upstream_anonymized", mode == identityPassthrough,
+				"nps_dir", npsDir, "dhcp_dir", dhcpDir, "clickhouse", conn != nil)
 		}
-	} else {
-		slog.Info("identity enrichment disabled", "reason", "IDENTITY_TOKEN_KEY_FILE + a log dir not set")
 	}
 
 	// DNS (what-side) enrichment — optional, env-gated on DNS_LOG_DIR. Hostnames

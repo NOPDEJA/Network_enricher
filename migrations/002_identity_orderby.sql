@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS identity_dhcp_events_new (
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (ip, event_time, event_id, mac_token, host_token)
-TTL event_time + INTERVAL 90 DAY DELETE;
+TTL event_time + INTERVAL 120 DAY DELETE;
 
 INSERT INTO identity_dhcp_events_new
 SELECT event_time, event_id, ip, mac_token, host_token
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS identity_radius_events_new (
 ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (mac_token, event_time, session_id, acct_status, user_token, nas_ip)
-TTL event_time + INTERVAL 90 DAY DELETE;
+TTL event_time + INTERVAL 120 DAY DELETE;
 
 INSERT INTO identity_radius_events_new
 SELECT event_time, acct_status, session_id, user_token, mac_token, nas_ip

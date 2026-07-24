@@ -147,6 +147,43 @@ func TestNewTokenizerFailsClosed(t *testing.T) {
 	}
 }
 
+// UpstreamPseudonymTokenizer must return its input VERBATIM, including values
+// that the real Tokenizer would normalize away or drop — that is the whole point
+// of pass-through mode (the value is already a pseudonym scrubbed upstream and
+// must reach ClickHouse byte-for-byte so the mentor's mapping can reverse it).
+func TestUpstreamPseudonymTokenizerVerbatim(t *testing.T) {
+	var pt UpstreamPseudonymTokenizer
+
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"non-12-hex-mac", "PSN-9f3a2b"},                 // real Tokenizer -> "" (not 12 hex)
+		{"mixed-case-user-with-realm", "MUIC\\PseudoJDoe"}, // real Tokenizer strips realm + lowercases
+		{"uppercase-host", "PSEUDO-HOST-01"},             // real Tokenizer lowercases
+		{"with-dots-and-colons", "aa.bb:cc"},             // real Tokenizer would mangle separators
+		{"leading-trailing-space-preserved", " keepme "}, // pass-through does NOT trim
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pt.MACToken(tc.in); got != tc.in {
+				t.Errorf("MACToken(%q) = %q, want verbatim", tc.in, got)
+			}
+			if got := pt.UserToken(tc.in); got != tc.in {
+				t.Errorf("UserToken(%q) = %q, want verbatim", tc.in, got)
+			}
+			if got := pt.HostToken(tc.in); got != tc.in {
+				t.Errorf("HostToken(%q) = %q, want verbatim", tc.in, got)
+			}
+		})
+	}
+
+	// Both concrete types must satisfy the shared narrow interface.
+	var _ identityTokenizer = UpstreamPseudonymTokenizer{}
+	var _ identityTokenizer = (*Tokenizer)(nil)
+}
+
 // Grep-proof: after a full parse of realistic log lines, no raw identifier
 // (username, MAC hex, hostname) may appear anywhere in the resulting event —
 // only tokens. This is the core privacy guarantee.

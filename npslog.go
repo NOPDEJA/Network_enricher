@@ -63,7 +63,7 @@ var dtsTimeLayouts = []string{
 //	                         accounting status other than Start/Interim/Stop) —
 //	                         skip silently
 //	ok == true            -> a session event to feed into the store
-func parseNPSLine(line string, tok *Tokenizer, loc *time.Location) (RadiusEvent, bool, error) {
+func parseNPSLine(line string, tok identityTokenizer, loc *time.Location) (RadiusEvent, bool, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return RadiusEvent{}, false, nil
