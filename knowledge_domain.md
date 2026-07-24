@@ -49,9 +49,9 @@ Built for campus-WiFi legal forensics (MUIC use case): given a timestamp and an 
 
 ### Identity — DHCP + 802.1x/RADIUS ("who")
 - **Sources:** Microsoft NPS RADIUS accounting logs (DTS-XML) give username ↔ MAC sessions; Windows DHCP audit logs give IP ↔ MAC leases. MUIC's RADIUS does **not** carry Framed-IP-Address (auth happens before DHCP), so the chain is always `flow IP + time → DHCP lease → MAC → RADIUS session → user`, joined on MAC. Both mappings are temporal; lease intervals are derived from events (open at assign/renew, close at release/reassign/max-lease fallback).
-- **Pseudonymization:** identifiers are tokenized as `HMAC-SHA256(keyfile, normalized id)` (truncated). Deterministic, so the MAC join works across tables. There is **no token→person mapping table anywhere** — re-identification is recompute-forward: an authorized holder of the key tokenizes a candidate identity and compares. **Fail closed:** if the key file can't be loaded, the whole identity subsystem stays off.
+- **Pseudonymization — two modes.** *Hashed* (default): identifiers are tokenized locally as `HMAC-SHA256(keyfile, normalized id)` (truncated). Deterministic, so the MAC join works across tables. There is **no token→person mapping table anywhere** — re-identification is recompute-forward: an authorized holder of the key tokenizes a candidate identity and compares. *Pass-through* (`IDENTITY_UPSTREAM_ANONYMIZED=true`): the logs arrive already pseudonymized upstream, so the enricher stores the tokens verbatim and holds no key — the mapping lives entirely upstream (the mentor-side model). **Fail closed:** with a log dir but neither a key file nor the upstream flag, the whole identity subsystem stays off; pass-through is unreachable without its explicit flag, so "no key" never stores raw. The two modes are mutually exclusive — setting both is a fatal contradiction.
 - **Flow tagging:** 4 columns (`src/dst_mac_token`, `src/dst_user_token`), both directions like dst-tenant attribution.
-- **Gating:** `IDENTITY_TOKEN_KEY_FILE` + at least one of `IDENTITY_NPS_DIR`/`IDENTITY_DHCP_DIR`.
+- **Gating:** at least one of `IDENTITY_NPS_DIR`/`IDENTITY_DHCP_DIR`, plus exactly one of `IDENTITY_TOKEN_KEY_FILE` (hashed) or `IDENTITY_UPSTREAM_ANONYMIZED=true` (pass-through).
 
 ### DNS — BIND9 resolver logs ("what")
 - **Why:** one CDN IP serves thousands of sites; the DNS query is the only network-level record of the actual hostname. Correlation is **per-client**: `(clientIP, answeredIP) → hostname`, so one client's resolution never labels another client's flows.
@@ -61,7 +61,7 @@ Built for campus-WiFi legal forensics (MUIC use case): given a timestamp and an 
 - **Gating:** `DNS_LOG_DIR` + `DNS_LOG_FORMAT=bind|tcpdump|dnstap` (default `bind`; the tcpdump format adds `DNS_TCPDUMP_DATE`/`DNS_TCPDUMP_RESOLVER_IP` for capture replay).
 
 ### Shared machinery
-- **Event tables:** `identity_dhcp_events`, `identity_radius_events`, `dns_events` — `ReplacingMergeTree` with fully-identifying `ORDER BY` keys, so restart/replay re-ingestion deduplicates instead of double-counting; 90d TTL matching `flows`.
+- **Event tables:** `identity_dhcp_events`, `identity_radius_events`, `dns_events` — `ReplacingMergeTree` with fully-identifying `ORDER BY` keys, so restart/replay re-ingestion deduplicates instead of double-counting; 120d TTL matching `flows`.
 - **File poller (`filepoller.go`):** shared incremental scan core — 30s ticker, per-file byte offsets, rotation/truncation detection, 8MB-per-scan read cap, panic-recovered scans. Owned by one goroutine per store; offsets need no lock.
 - **Timezones (`logtz.go`):** server logs carry naive local timestamps. Parsers interpret them in the zone from per-source overrides (`NPS_LOG_TZ`/`DHCP_LOG_TZ`/`DNS_LOG_TZ`) falling back to `LOG_TZ`, default UTC; invalid zones are fatal at startup. `time/tzdata` is imported so this works on Windows dev machines.
 - **Hot-path cost:** live tagging is RWMutex-guarded map reads only — no I/O, no allocation. All log parsing and ClickHouse event writes happen on the poller goroutines, never in the flow path.

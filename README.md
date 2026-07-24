@@ -212,7 +212,8 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `GEOIP_ASN_PATH` | _(disabled)_ | Path to `GeoLite2-ASN.mmdb` |
 | `TENANT_CONFIG_PATH` | _(disabled)_ | Path to tenant YAML config |
 | `THREAT_FEED_URL` | Feodo Tracker CSV | Override threat intel feed URL |
-| `IDENTITY_TOKEN_KEY_FILE` | _(disabled)_ | Path to the HMAC key file for identity pseudonymization. **Required** to enable identity; empty/missing keeps identity off (fail closed) |
+| `IDENTITY_TOKEN_KEY_FILE` | _(disabled)_ | Path to the HMAC key file for **local** identity pseudonymization (hashed mode). With a log dir set, enables identity; empty/missing keeps identity off (fail closed) unless `IDENTITY_UPSTREAM_ANONYMIZED` is on |
+| `IDENTITY_UPSTREAM_ANONYMIZED` | `false` | Pass-through mode: identity is already pseudonymized **upstream**, so store the incoming tokens **verbatim** (no local key needed). Requires a log dir; setting this **and** `IDENTITY_TOKEN_KEY_FILE` together is a fatal contradiction (refuses to guess) |
 | `IDENTITY_NPS_DIR` | _(disabled)_ | Directory of NPS DTS-XML accounting logs to tail |
 | `IDENTITY_DHCP_DIR` | _(disabled)_ | Directory of Windows DHCP audit logs to tail |
 | `IDENTITY_MAX_LEASE` | `24h` | Max age a DHCP lease is trusted without renewal (Go duration) |
@@ -278,11 +279,22 @@ outside the pipeline. Normalization collapses every notation of one identifier
 to one token (MAC separators stripped and lowercased; `DOMAIN\user` / `user@realm`
 reduced to `user`), which is exactly what lets a DHCP MAC join a RADIUS MAC.
 
+**Two ways the pseudonyms get there.** In the default **hashed mode**
+(`IDENTITY_TOKEN_KEY_FILE` set) the enricher tokenizes locally with the HMAC key
+above. In **pass-through mode** (`IDENTITY_UPSTREAM_ANONYMIZED=true`) the logs
+arrive *already* pseudonymized by an upstream process, so the enricher stores the
+incoming tokens verbatim and holds no key at all — the re-identification mapping
+lives entirely upstream. Either way a raw identifier is never written; the two
+are mutually exclusive and configuring both at once is a fatal error rather than a
+silent downgrade.
+
 **Fail closed** (the one deliberate inversion of the project's fail-open rule):
-if `IDENTITY_TOKEN_KEY_FILE` is missing or empty the entire identity subsystem
-stays disabled and no raw identifier can ever be written — but **flows keep
-flowing** untouched either way. Identity turns on only when the key file *and*
-at least one of `IDENTITY_NPS_DIR` / `IDENTITY_DHCP_DIR` are set.
+with a log dir set but *neither* a key file nor `IDENTITY_UPSTREAM_ANONYMIZED`,
+the identity subsystem stays disabled and no raw identifier can ever be written —
+pass-through is unreachable without its explicit flag, so "no key" never means
+"store raw". Either way **flows keep flowing** untouched. Identity turns on only
+when at least one of `IDENTITY_NPS_DIR` / `IDENTITY_DHCP_DIR` is set *and* exactly
+one of the two modes is selected.
 
 Run the identity tests (they use synthetic fixtures under `testdata/nps` and
 `testdata/dhcp`, no external services):
@@ -341,11 +353,11 @@ The enricher auto-creates tables on startup (no manual DDL needed):
 
 | Table | Engine | Purpose |
 |---|---|---|
-| `flows` | `MergeTree` | Raw enriched flows, 90-day TTL, partitioned by day |
+| `flows` | `MergeTree` | Raw enriched flows, 120-day TTL, partitioned by day |
 | `flows_1m` | `SummingMergeTree` | Per-minute aggregates (bytes, packets, flow count) |
 | `flows_1h` | `SummingMergeTree` | Per-hour aggregates |
-| `identity_dhcp_events` | `ReplacingMergeTree` | Raw (tokenized) DHCP lease events — forensic source of truth for ip→MAC |
-| `identity_radius_events` | `ReplacingMergeTree` | Raw (tokenized) RADIUS accounting events — MAC→user |
+| `identity_dhcp_events` | `ReplacingMergeTree` | Raw (pseudonymized) DHCP lease events — forensic source of truth for ip→MAC |
+| `identity_radius_events` | `ReplacingMergeTree` | Raw (pseudonymized) RADIUS accounting events — MAC→user |
 | `dns_events` | `ReplacingMergeTree` | Per-client DNS resolutions (client, qname, answered IP) — the "what" evidence |
 
 Materialized views (`flows_1m_mv`, `flows_1h_mv`) populate the aggregate tables
