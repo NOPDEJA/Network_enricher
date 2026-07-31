@@ -86,6 +86,11 @@ func TestParseKeaLeaseEdgeCases(t *testing.T) {
 		{"blank line is skipped", "   ", false, false, 0},
 		{"declined lease is skipped", "10.0.0.9,,,3600,1783003600,1,0,0,,1,,0", false, false, 0},
 		{"unknown state is skipped", "10.0.0.9,aa:bb:cc:dd:ee:ff,,3600,1783003600,1,0,0,host,7,,0", false, false, 0},
+		// The state must be validated BEFORE valid_lifetime: an unknown state
+		// carrying a zeroed lifetime must still skip, not close a binding.
+		{"unknown state with zero lifetime is still skipped", "10.0.0.9,aa:bb:cc:dd:ee:ff,,0,1783003600,1,0,0,host,7,,0", false, false, 0},
+		// Declined leases carry a zeroed lifetime in the wild; still a skip.
+		{"declined with zero lifetime is skipped", "10.0.0.9,,,0,1783003600,1,0,0,,1,,0", false, false, 0},
 		{"assigned lease parses as 10", assigned, true, false, 10},
 		{"zero lifetime parses as 12", "10.0.0.5,aa:bb:cc:dd:ee:ff,,0,1783003600,1,0,0,host,0,,0", true, false, 12},
 		{"expired-reclaimed parses as 12", "10.0.0.5,aa:bb:cc:dd:ee:ff,,3600,1783003600,1,0,0,host,2,,0", true, false, 12},

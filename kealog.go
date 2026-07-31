@@ -53,6 +53,35 @@ var (
 // ("address") does not parse as an IP, so it falls through as a silent skip.
 // That also survives rotation, where a scan may start mid-file with no header.
 //
+// UNVERIFIED ASSUMPTIONS — READ BEFORE TRUSTING THIS PARSER IN EVIDENCE.
+// This parser was written and tested against SYNTHETIC fixtures only; no real
+// ISC Kea output was ever available. An independent review (31 Jul 2026) flagged
+// each of the following as contradicted-or-unconfirmed against Kea's actual
+// lease-file writer. Verify each against a real memfile before any answer from
+// this source is used forensically:
+//
+//  1. DELETION ROWS. We assume `expire` on a valid_lifetime=0 row is the instant
+//     of deletion. Kea may instead write the deletion row by copying the lease
+//     and zeroing valid_lifetime, leaving `expire` carried over from the
+//     original lease. If so, releases are mistimed and a real lease interval can
+//     collapse to a same-instant open+close (false negative for a period the
+//     device genuinely held the address).
+//  2. LFC FILE SETS. Kea's lease-file cleanup produces suffixed companions
+//     (`.1`, `.2`, `.completed`) beside the active file. The shared poller reads
+//     every file in the directory in name order, so the active file sorts first
+//     and older compacted data replays AFTER it. On a restart replay that
+//     ordering can reopen a lease the newer data had already closed. Until this
+//     is handled, point IDENTITY_KEA_DIR at a directory containing ONLY the
+//     active lease file.
+//  3. FILE REPLACEMENT. The poller detects rotation by size shrinking below the
+//     stored offset. LFC replacing the active file with a same-or-larger one is
+//     not detected, and the poller can resume mid-record in unrelated content.
+//
+// A fourth, known-by-design gap: the real expiry is held in memory only and is
+// NOT persisted, so cmd/trace reconstructs lease windows under IDENTITY_MAX_LEASE
+// alone and will OVER-attribute a short Kea lease (see the Deadline field in
+// dhcplog.go). Closing that requires persisting the expiry — a schema migration.
+//
 // TIME: unlike the Windows NPS/DHCP parsers there is NO timezone knob here.
 // Kea's `expire` is an absolute UNIX epoch, so it is unambiguous — LOG_TZ /
 // DHCP_LOG_TZ exist only because the Windows logs write naive local time.
@@ -101,29 +130,40 @@ func parseKeaLease(line string, tok identityTokenizer) (DhcpEvent, bool, error) 
 		return DhcpEvent{}, false, errInvalidKeaField
 	}
 
-	if state == keaStateDeclined {
-		return DhcpEvent{}, false, nil
-	}
-
-	var eventID uint16
-	switch {
-	case lifetime == 0, state == keaStateExpiredReclaimed:
-		eventID = 12
-	case state == keaStateDefault:
-		eventID = 10
+	// Validate the state BEFORE looking at valid_lifetime. Testing lifetime==0
+	// first would let an unknown future state whose row happens to carry a zeroed
+	// lifetime fall through as a release, silently closing a binding the state's
+	// real meaning may not imply — the opposite of the skip promised here.
+	switch state {
+	case keaStateDeclined:
+		return DhcpEvent{}, false, nil // no device bound; nothing to record
+	case keaStateDefault, keaStateExpiredReclaimed:
+		// modeled below
 	default:
 		// A state Kea added that we don't model. Skip rather than guess: an
 		// unknown state must not silently open or close a binding.
 		return DhcpEvent{}, false, nil
 	}
 
-	// An assign/renew happened at cltt (expire - valid_lifetime); a release
-	// happened AT expire. Using cltt for a release would date the tombstone
-	// before the assign it supersedes, and applyDHCP's newest-wins guard would
-	// then reject it — leaving an expired lease resolvable, which is exactly the
-	// false-attribution window this parser exists to close. (For the
-	// valid_lifetime=0 delete row the two formulas coincide; it is the
-	// state=2 expired-reclaimed row, which keeps its lifetime, that diverges.)
+	eventID := uint16(10)
+	if lifetime == 0 || state == keaStateExpiredReclaimed {
+		eventID = 12
+	}
+
+	// An assign/renew happened at cltt (expire - valid_lifetime). That much is
+	// solid: it is Kea's own reconstruction and it was independently confirmed.
+	//
+	// A release is dated at `expire`. Dating it at cltt instead would put the
+	// tombstone BEFORE the assign it supersedes, and applyDHCP's newest-wins
+	// guard would reject it, leaving an ended lease still resolvable — the exact
+	// false attribution this parser exists to prevent. So `expire` is the safer
+	// of the two available choices.
+	//
+	// But see the UNVERIFIED ASSUMPTIONS block on parseKeaLease: on a real
+	// valid_lifetime=0 deletion row, `expire` may be a carried-over value from
+	// the original lease rather than the moment of deletion. If so, a release is
+	// mistimed and a genuinely-held interval can be collapsed. This must be
+	// checked against real Kea output before release rows are trusted.
 	expireAt := time.Unix(expire, 0).UTC()
 	eventTime := expireAt
 	if eventID == 10 {
