@@ -16,6 +16,16 @@ type DhcpEvent struct {
 	IP        string
 	MACToken  string
 	HostToken string
+
+	// Deadline is the lease's real expiry when the source log carries one (ISC
+	// Kea's `expire` column; see kealog.go). Zero from the Windows audit log,
+	// which has no reliable lease-duration field. IN-MEMORY ONLY: it clamps the
+	// binding's trust window in applyDHCP and is deliberately NOT persisted —
+	// chEventWriter.sendDHCP names its columns explicitly, so this field touches
+	// no DDL. Consequence: cmd/trace, which folds candidate sets from the stored
+	// rows, still uses maxLease semantics — a known, accepted divergence from
+	// identity.go (cmd/trace already diverges by design).
+	Deadline time.Time
 }
 
 var errShortDHCPRow = errors.New("dhcp row has too few fields")

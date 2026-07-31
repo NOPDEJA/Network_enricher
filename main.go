@@ -280,9 +280,10 @@ func main() {
 	keyFile := os.Getenv("IDENTITY_TOKEN_KEY_FILE")
 	npsDir := os.Getenv("IDENTITY_NPS_DIR")
 	dhcpDir := os.Getenv("IDENTITY_DHCP_DIR")
+	keaDir := os.Getenv("IDENTITY_KEA_DIR") // ISC Kea memfile lease dir (kea-leases4.csv)
 	upstreamAnon := os.Getenv("IDENTITY_UPSTREAM_ANONYMIZED") == "true"
 
-	mode, fatal := decideIdentityMode(upstreamAnon, keyFile != "", npsDir != "" || dhcpDir != "")
+	mode, fatal := decideIdentityMode(upstreamAnon, keyFile != "", npsDir != "" || dhcpDir != "" || keaDir != "")
 	switch {
 	case fatal:
 		// Both the pass-through flag and a token key are set. Refuse to pick a
@@ -303,7 +304,7 @@ func main() {
 			// at un-scrubbed logs, raw identifiers land in ClickHouse. Log resolved
 			// ABSOLUTE paths so a wrong-dir misconfiguration is visible.
 			slog.Warn("identity: UPSTREAM-ANONYMIZED pass-through — storing upstream pseudonyms VERBATIM with NO local tokenization; operator asserts inputs are already anonymized",
-				"nps_dir", absPathForLog(npsDir), "dhcp_dir", absPathForLog(dhcpDir))
+				"nps_dir", absPathForLog(npsDir), "dhcp_dir", absPathForLog(dhcpDir), "kea_dir", absPathForLog(keaDir))
 		case identityHashed:
 			t, terr := NewTokenizer(keyFile)
 			if terr != nil {
@@ -329,13 +330,13 @@ func main() {
 			if writer != nil {
 				conn = writer.conn
 			}
-			identity = NewIdentityStore(tok, npsDir, dhcpDir, npsLoc, dhcpLoc,
+			identity = NewIdentityStore(tok, npsDir, dhcpDir, keaDir, npsLoc, dhcpLoc,
 				durEnv("IDENTITY_MAX_LEASE", 24*time.Hour),
 				durEnv("IDENTITY_MAX_SESSION", 24*time.Hour),
 				conn)
 			identity.StartPoller(ctx)
 			slog.Info("identity enrichment enabled", "upstream_anonymized", mode == identityPassthrough,
-				"nps_dir", npsDir, "dhcp_dir", dhcpDir, "clickhouse", conn != nil)
+				"nps_dir", npsDir, "dhcp_dir", dhcpDir, "kea_dir", keaDir, "clickhouse", conn != nil)
 		}
 	}
 

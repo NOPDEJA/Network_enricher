@@ -1,0 +1,8 @@
+address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id
+10.10.20.30,aa:bb:cc:dd:ee:ff,,3600,1783003600,1,0,0,laptop-01.muic.local,0,,0
+10.10.20.30,aa:bb:cc:dd:ee:ff,,3600,1783005400,1,0,0,laptop-01.muic.local,0,,0
+
+10.10.20.31,11:22:33:44:55:66,,0,1783003700,1,0,0,phone-02.muic.local,0,,0
+10.10.20.32,77:88:99:aa:bb:cc,,3600,1783007200,1,0,0,tablet-03.muic.local,2,,0
+10.10.20.33,,,3600,1783008000,1,0,0,,1,,0
+10.10.20.34,de:ad:be:ef:00:01,,3600

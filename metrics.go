@@ -53,11 +53,11 @@ var (
 	})
 	identityEventsParsed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "enricher_identity_events_parsed_total",
-		Help: "Identity log events parsed and applied, labeled by source (nps or dhcp).",
+		Help: "Identity log events parsed and applied, labeled by source (nps, dhcp, or kea).",
 	}, []string{"source"})
 	identityParseErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "enricher_identity_parse_errors_total",
-		Help: "Malformed identity log lines skipped, labeled by source (nps or dhcp).",
+		Help: "Malformed identity log lines skipped, labeled by source (nps, dhcp, or kea).",
 	}, []string{"source"})
 	identityTagHits = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "enricher_identity_tag_hits_total",
