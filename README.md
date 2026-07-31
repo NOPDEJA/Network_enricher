@@ -169,6 +169,7 @@ docker compose -f docker_compose.yml down
 | `pseudonym.go` | `Tokenizer` — HMAC-SHA256 pseudonymization of usernames/MACs/hostnames, fail-closed key load |
 | `npslog.go` | NPS DTS-XML RADIUS accounting parser → tokenized `RadiusEvent` |
 | `dhcplog.go` | Windows DHCP audit-log parser → tokenized `DhcpEvent` |
+| `kealog.go` | ISC Kea memfile lease parser (Linux DHCP) → tokenized `DhcpEvent`, carrying the real lease expiry |
 | `identity.go` | `IdentityStore` — ip→mac→user current-state join, hot-path `Lookup`, file poller, ClickHouse event writer |
 | `pseudonym_test.go` / `npslog_test.go` / `dhcplog_test.go` / `identity_test.go` | Identity unit + golden tests (`testdata/nps`, `testdata/dhcp` fixtures) |
 | `dnslog.go` | BIND9 querylog/answer parser → `DnsEvent` |
@@ -216,6 +217,7 @@ unset variables fall back to safe defaults, and enrichers that can't initialize
 | `IDENTITY_UPSTREAM_ANONYMIZED` | `false` | Pass-through mode: identity is already pseudonymized **upstream**, so store the incoming tokens **verbatim** (no local key needed). Requires a log dir; setting this **and** `IDENTITY_TOKEN_KEY_FILE` together is a fatal contradiction (refuses to guess) |
 | `IDENTITY_NPS_DIR` | _(disabled)_ | Directory of NPS DTS-XML accounting logs to tail |
 | `IDENTITY_DHCP_DIR` | _(disabled)_ | Directory of Windows DHCP audit logs to tail |
+| `IDENTITY_KEA_DIR` | _(disabled)_ | Directory of ISC Kea `kea-leases4.csv` memfiles to tail (Linux DHCP). Alternative to `IDENTITY_DHCP_DIR` — same lease stream, different server. Needs **no** timezone knob: Kea's `expire` is absolute epoch, unlike the Windows logs' naive local time |
 | `IDENTITY_MAX_LEASE` | `24h` | Max age a DHCP lease is trusted without renewal (Go duration) |
 | `IDENTITY_MAX_SESSION` | `24h` | Idle bound on a RADIUS session with no Stop (Go duration) |
 | `DNS_LOG_DIR` | _(disabled)_ | Directory of DNS resolver logs to tail. Setting it turns DNS enrichment on — no key file needed, hostnames aren't personal data (fail open) |
@@ -605,8 +607,8 @@ Two options, in order of effort:
 | `enricher_clickhouse_flushes_total` | Counter | ClickHouse batch flush operations |
 | `enricher_clickhouse_rows_written_total` | Counter | Rows written to ClickHouse |
 | `enricher_threat_ips_loaded` | Gauge | Current count of IPs in the threat store |
-| `enricher_identity_events_parsed_total{source}` | Counter | Identity log events parsed+applied (`nps`/`dhcp`) |
-| `enricher_identity_parse_errors_total{source}` | Counter | Malformed identity log lines skipped (`nps`/`dhcp`) |
+| `enricher_identity_events_parsed_total{source}` | Counter | Identity log events parsed+applied (`nps`/`dhcp`/`kea`) |
+| `enricher_identity_parse_errors_total{source}` | Counter | Malformed identity log lines skipped (`nps`/`dhcp`/`kea`) |
 | `enricher_identity_tag_hits_total` | Counter | Flows where identity resolved ≥1 token |
 | `enricher_identity_tag_misses_total` | Counter | Flows where identity resolved no token |
 | `enricher_identity_event_write_errors_total` | Counter | ClickHouse identity-event writes that failed (retried next scan) |

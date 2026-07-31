@@ -10,9 +10,12 @@ import (
 )
 
 // IdentityStore answers "who was behind this IP at this moment" for campus-WiFi
-// forensics. It keeps a small CURRENT-STATE view built from two log streams:
+// forensics. It keeps a small CURRENT-STATE view built from two streams, fed by
+// three log sources (the two lease sources are alternatives — Windows DHCP and
+// ISC Kea are different servers, not two halves of one feed):
 //
 //	DHCP audit log:   ip  -> macToken   (which device holds the lease)
+//	Kea lease file:   ip  -> macToken   (same, for a Linux ISC Kea server)
 //	NPS/RADIUS log:   mac -> userToken  (which user authenticated that device)
 //
 // so a flow's source IP resolves to a device and a user via a two-hop join on
