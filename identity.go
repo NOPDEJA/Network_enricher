@@ -10,9 +10,12 @@ import (
 )
 
 // IdentityStore answers "who was behind this IP at this moment" for campus-WiFi
-// forensics. It keeps a small CURRENT-STATE view built from two log streams:
+// forensics. It keeps a small CURRENT-STATE view built from two streams, fed by
+// three log sources (the two lease sources are alternatives — Windows DHCP and
+// ISC Kea are different servers, not two halves of one feed):
 //
 //	DHCP audit log:   ip  -> macToken   (which device holds the lease)
+//	Kea lease file:   ip  -> macToken   (same, for a Linux ISC Kea server)
 //	NPS/RADIUS log:   mac -> userToken  (which user authenticated that device)
 //
 // so a flow's source IP resolves to a device and a user via a two-hop join on
@@ -40,6 +43,7 @@ type IdentityStore struct {
 	tok     identityTokenizer
 	npsDir  string
 	dhcpDir string
+	keaDir  string         // ISC Kea memfile lease dir; timestamps are absolute epochs, so no zone
 	npsLoc  *time.Location // zone the NPS log's naive timestamps are in
 	dhcpLoc *time.Location // zone the DHCP log's naive timestamps are in
 
@@ -71,7 +75,7 @@ type macBinding struct {
 // NewIdentityStore builds the store. conn may be nil (ClickHouse unavailable),
 // in which case events are still applied to the in-memory view for live tagging
 // but not persisted.
-func NewIdentityStore(tok identityTokenizer, npsDir, dhcpDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
+func NewIdentityStore(tok identityTokenizer, npsDir, dhcpDir, keaDir string, npsLoc, dhcpLoc *time.Location, maxLease, maxSession time.Duration, conn driver.Conn) *IdentityStore {
 	if npsLoc == nil {
 		npsLoc = time.UTC
 	}
@@ -86,6 +90,7 @@ func NewIdentityStore(tok identityTokenizer, npsDir, dhcpDir string, npsLoc, dhc
 		tok:        tok,
 		npsDir:     npsDir,
 		dhcpDir:    dhcpDir,
+		keaDir:     keaDir,
 		npsLoc:     npsLoc,
 		dhcpLoc:    dhcpLoc,
 		offsets:    make(map[string]int64),
@@ -142,8 +147,8 @@ func (s *IdentityStore) Lookup(ip string) (macToken, userToken string) {
 // either arrival order: assign-first → the release no-ops on the MAC mismatch;
 // release-first → the tombstone, then the not-older cross-MAC assign rebinds.
 //
-// The lease deadline is event time + maxLease: the audit log has no reliable
-// lease-duration column, so maxLease is the trust horizon.
+// The lease deadline is event time + maxLease, clamped by the lease's real
+// expiry when the source log carries one — see leaseDeadline.
 func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 	if e.MACToken == "" {
 		return
@@ -162,7 +167,7 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 				return // older than current binding: don't overwrite newer state
 			}
 		}
-		s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: e.EventTime.Add(s.maxLease)}
+		s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: leaseDeadline(e, s.maxLease)}
 	case 12:
 		if b, ok := s.ipState[e.IP]; ok && b.macToken == e.MACToken && !e.EventTime.Before(b.eventTime) {
 			// Tombstone, don't delete: a later OLDER assign must find this closed
@@ -171,9 +176,27 @@ func (s *IdentityStore) applyDHCP(e DhcpEvent) {
 			// has deadline < releaseTime+maxLease, so once the tombstone is
 			// evicted a late resurrection is already past its own deadline and
 			// Lookup's deadline check rejects it.
+			//
+			// Deliberately NOT clamped by e.Deadline: a tombstone's lifetime is a
+			// replay-guard horizon, not a lease lifetime, and shortening it would
+			// let an old assign resurrect a closed lease.
 			s.ipState[e.IP] = ipBinding{macToken: e.MACToken, eventTime: e.EventTime, deadline: e.EventTime.Add(s.maxLease), closed: true}
 		}
 	}
+}
+
+// leaseDeadline is how long an opened lease binding is trusted. maxLease stays a
+// hard cap on how long ANY lease is trusted without renewal, but when the source
+// log carries the lease's real expiry (e.Deadline, set by the Kea parser) and it
+// lands sooner, the real expiry wins: trusting a lease past its actual expiry is
+// a false-attribution window. A zero Deadline (the Windows audit log, which has
+// no reliable lease-duration column) keeps the original maxLease-only behavior.
+func leaseDeadline(e DhcpEvent, maxLease time.Duration) time.Time {
+	hardCap := e.EventTime.Add(maxLease)
+	if !e.Deadline.IsZero() && e.Deadline.Before(hardCap) {
+		return e.Deadline
+	}
+	return hardCap
 }
 
 // applyRADIUS folds one accounting event into the in-memory view.
@@ -307,6 +330,7 @@ func (s *IdentityStore) scan() {
 	}()
 	s.scanDir(s.npsDir, sourceNPS)
 	s.scanDir(s.dhcpDir, sourceDHCP)
+	s.scanDir(s.keaDir, sourceKea)
 	if s.ch != nil {
 		s.ch.flush()
 	}
@@ -316,6 +340,7 @@ func (s *IdentityStore) scan() {
 const (
 	sourceNPS  = "nps"
 	sourceDHCP = "dhcp"
+	sourceKea  = "kea"
 )
 
 // scanDir tails one identity log directory using the shared incremental-scan
@@ -324,9 +349,12 @@ func (s *IdentityStore) scanDir(dir, source string) {
 	// nil onTruncate: the identity parsers are line-stateless, so a truncated
 	// file simply re-feeds from 0 with nothing to discard.
 	scanAppendedDir(dir, source, s.offsets, func(_, line string) {
-		if source == sourceNPS {
+		switch source {
+		case sourceNPS:
 			s.ingestNPS(line)
-		} else {
+		case sourceKea:
+			s.ingestKea(line)
+		default:
 			s.ingestDHCP(line)
 		}
 	}, nil)
@@ -358,6 +386,25 @@ func (s *IdentityStore) ingestDHCP(line string) {
 		return
 	}
 	identityEventsParsed.WithLabelValues(sourceDHCP).Inc()
+	s.applyDHCP(ev)
+	if s.ch != nil {
+		s.ch.addDHCP(ev)
+	}
+}
+
+// ingestKea mirrors ingestDHCP for ISC Kea memfile lease rows: same DhcpEvent,
+// same in-memory fold, same ClickHouse table — only the parser and the metric
+// label differ.
+func (s *IdentityStore) ingestKea(line string) {
+	ev, ok, err := parseKeaLease(line, s.tok)
+	if err != nil {
+		identityParseErrors.WithLabelValues(sourceKea).Inc()
+		return
+	}
+	if !ok {
+		return
+	}
+	identityEventsParsed.WithLabelValues(sourceKea).Inc()
 	s.applyDHCP(ev)
 	if s.ch != nil {
 		s.ch.addDHCP(ev)

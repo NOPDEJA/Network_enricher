@@ -17,7 +17,7 @@ var identBase = time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 func newClockedStore(t *testing.T, maxLease, maxSession time.Duration) (*IdentityStore, *time.Time) {
 	t.Helper()
 	tok := newTestTokenizer(t, "identity-test-key")
-	s := NewIdentityStore(tok, "", "", time.UTC, time.UTC, maxLease, maxSession, nil)
+	s := NewIdentityStore(tok, "", "", "", time.UTC, time.UTC, maxLease, maxSession, nil)
 	clk := new(time.Time)
 	*clk = identBase
 	s.now = func() time.Time { return *clk }
@@ -63,6 +63,88 @@ func TestDHCPLeaseIntervals(t *testing.T) {
 			t.Errorf("mac = %q, want empty (lease expired)", mac)
 		}
 	})
+}
+
+// A Kea lease carries its real expiry in Deadline, which must clamp the trust
+// window when it lands sooner than maxLease — trusting a lease past its actual
+// expiry is a false-attribution window. maxLease still hard-caps a Deadline that
+// lands later, and a zero Deadline (the Windows audit log) is unchanged.
+func TestLeaseDeadlineClamp(t *testing.T) {
+	s, clk := newClockedStore(t, 24*time.Hour, 24*time.Hour)
+	mac := s.tok.MACToken("aa:bb:cc:dd:ee:ff")
+
+	t.Run("real expiry sooner than maxLease wins", func(t *testing.T) {
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.1.1", MACToken: mac,
+			Deadline: identBase.Add(1 * time.Hour)})
+		*clk = identBase.Add(30 * time.Minute)
+		if m, _ := s.Lookup("10.0.1.1"); m != mac {
+			t.Errorf("mac = %q, want %q (before the real expiry)", m, mac)
+		}
+		*clk = identBase.Add(90 * time.Minute)
+		if m, _ := s.Lookup("10.0.1.1"); m != "" {
+			t.Errorf("mac = %q, want empty (past the real expiry)", m)
+		}
+	})
+
+	t.Run("maxLease still caps a longer real expiry", func(t *testing.T) {
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.1.2", MACToken: mac,
+			Deadline: identBase.Add(72 * time.Hour)})
+		*clk = identBase.Add(25 * time.Hour)
+		if m, _ := s.Lookup("10.0.1.2"); m != "" {
+			t.Errorf("mac = %q, want empty (maxLease is the hard cap)", m)
+		}
+	})
+
+	t.Run("zero deadline keeps maxLease behavior", func(t *testing.T) {
+		s.applyDHCP(DhcpEvent{EventTime: identBase, EventID: 10, IP: "10.0.1.3", MACToken: mac})
+		*clk = identBase.Add(90 * time.Minute)
+		if m, _ := s.Lookup("10.0.1.3"); m != mac {
+			t.Errorf("mac = %q, want %q (windows event, maxLease horizon)", m, mac)
+		}
+		*clk = identBase.Add(25 * time.Hour)
+		if m, _ := s.Lookup("10.0.1.3"); m != "" {
+			t.Errorf("mac = %q, want empty (past maxLease)", m)
+		}
+	})
+}
+
+// Kea rows ingest through the same fold as the Windows audit log, under the
+// "kea" metric label, and a malformed lease row is counted and skipped rather
+// than killing the poller.
+func TestIngestKea(t *testing.T) {
+	s, clk := newClockedStore(t, 24*time.Hour, 24*time.Hour)
+	*clk = time.Unix(1783001000, 0).UTC()
+
+	before := testutil.ToFloat64(identityParseErrors.WithLabelValues(sourceKea))
+	lines := []string{
+		"address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id",
+		"10.0.2.1,aa:bb:cc:dd:ee:ff,,3600,1783003600,1,0,0,host-a,0,,0", // good assign
+		"10.0.2.2,11:22:33:44:55:66,,BAD,1783003600,1,0,0,host-b,0,,0",  // malformed
+		"10.0.2.3,11:22:33:44:55:66,,3600,1783003600,1,0,0,host-c,0,,0", // good assign
+	}
+	for _, l := range lines {
+		s.ingestKea(l)
+	}
+
+	if delta := testutil.ToFloat64(identityParseErrors.WithLabelValues(sourceKea)) - before; delta != 1 {
+		t.Errorf("kea parse errors delta = %v, want 1", delta)
+	}
+	if m, _ := s.Lookup("10.0.2.1"); m != s.tok.MACToken("aa:bb:cc:dd:ee:ff") {
+		t.Errorf("kea assign not applied: mac = %q", m)
+	}
+	if m, _ := s.Lookup("10.0.2.2"); m != "" {
+		t.Error("malformed kea row must not create a binding")
+	}
+	if m, _ := s.Lookup("10.0.2.3"); m == "" {
+		t.Error("good kea row after the malformed one was not applied")
+	}
+
+	// Past the lease's own expire (1783003600) the binding stops resolving even
+	// though maxLease is 24h.
+	*clk = time.Unix(1783003601, 0).UTC()
+	if m, _ := s.Lookup("10.0.2.1"); m != "" {
+		t.Errorf("mac = %q, want empty past the kea lease expiry", m)
+	}
 }
 
 // RADIUS sessions: a Start opens the window, a Stop closes it (lease still tags
