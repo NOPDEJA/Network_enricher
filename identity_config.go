@@ -45,6 +45,10 @@ func decideIdentityMode(upstreamAnon, keyFileSet, anyLogDir bool) (mode identity
 	return identityOff, false
 }
 
+func hasConflictingLeaseDirs(dhcpDir, keaDir string) bool {
+	return dhcpDir != "" && keaDir != ""
+}
+
 // absPathForLog resolves dir to an absolute path for startup logging so a
 // pass-through misconfiguration pointed at the wrong directory is visible in the
 // logs. An empty dir logs as "(unset)"; an unresolvable path falls back to the

@@ -32,12 +32,34 @@ func TestDecideIdentityMode(t *testing.T) {
 		{"no key no flag, dir set", false, false, true, identityOff, false},
 		{"nothing set", false, false, false, identityOff, false},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mode, fatal := decideIdentityMode(tc.upstream, tc.keyFileSet, tc.anyLogDir)
 			if mode != tc.wantMode || fatal != tc.wantFatal {
 				t.Errorf("decideIdentityMode(%v,%v,%v) = (%d,%v), want (%d,%v)",
 					tc.upstream, tc.keyFileSet, tc.anyLogDir, mode, fatal, tc.wantMode, tc.wantFatal)
+			}
+		})
+	}
+}
+
+func TestHasConflictingLeaseDirs(t *testing.T) {
+	cases := []struct {
+		name    string
+		dhcpDir string
+		keaDir  string
+		want    bool
+	}{
+		{"neither set", "", "", false},
+		{"only dhcp set", "/var/log/dhcp", "", false},
+		{"only kea set", "", "/var/lib/kea", false},
+		{"both set", "/var/log/dhcp", "/var/lib/kea", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasConflictingLeaseDirs(tc.dhcpDir, tc.keaDir); got != tc.want {
+				t.Errorf("hasConflictingLeaseDirs(%q, %q) = %v, want %v", tc.dhcpDir, tc.keaDir, got, tc.want)
 			}
 		})
 	}

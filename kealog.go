@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"errors"
 	"net/netip"
 	"strconv"
@@ -105,7 +106,13 @@ func parseKeaLease(line string, tok identityTokenizer) (DhcpEvent, bool, error) 
 		return DhcpEvent{}, false, nil
 	}
 
-	fields := strings.Split(line, ",")
+	fields, err := parseCSVLine(line)
+	if err != nil {
+		return DhcpEvent{}, false, errInvalidKeaField
+	}
+	if len(fields) == 0 {
+		return DhcpEvent{}, false, nil
+	}
 	addr := strings.TrimSpace(fields[keaColAddress])
 	if _, err := netip.ParseAddr(addr); err != nil {
 		return DhcpEvent{}, false, nil // header row / not a lease row
@@ -180,4 +187,11 @@ func parseKeaLease(line string, tok identityTokenizer) (DhcpEvent, bool, error) 
 		// clamps the binding's trust window in applyDHCP; see leaseDeadline.
 		Deadline: expireAt,
 	}, true, nil
+}
+
+func parseCSVLine(line string) ([]string, error) {
+	r := csv.NewReader(strings.NewReader(line))
+	r.FieldsPerRecord = -1
+	r.TrimLeadingSpace = true
+	return r.Read()
 }

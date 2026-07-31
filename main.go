@@ -283,6 +283,11 @@ func main() {
 	keaDir := os.Getenv("IDENTITY_KEA_DIR") // ISC Kea memfile lease dir (kea-leases4.csv)
 	upstreamAnon := os.Getenv("IDENTITY_UPSTREAM_ANONYMIZED") == "true"
 
+	if hasConflictingLeaseDirs(dhcpDir, keaDir) {
+		slog.Error("identity: IDENTITY_DHCP_DIR and IDENTITY_KEA_DIR are mutually exclusive lease sources; set exactly one")
+		os.Exit(1)
+	}
+
 	mode, fatal := decideIdentityMode(upstreamAnon, keyFile != "", npsDir != "" || dhcpDir != "" || keaDir != "")
 	switch {
 	case fatal:
