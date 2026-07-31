@@ -45,7 +45,10 @@ func TestParseKeaFixture(t *testing.T) {
 		{10, "10.10.20.30", 1783000000, 1783003600, "aa:bb:cc:dd:ee:ff"}, // assign
 		{10, "10.10.20.30", 1783001800, 1783005400, "aa:bb:cc:dd:ee:ff"}, // renew of the same address
 		{12, "10.10.20.31", 1783003700, 1783003700, "11:22:33:44:55:66"}, // valid_lifetime=0 delete
-		{12, "10.10.20.32", 1783003600, 1783007200, "77:88:99:aa:bb:cc"}, // state=2 expired-reclaimed
+		// state=2 expired-reclaimed: the event time is `expire` itself, NOT the
+		// cltt (1783003600) — a release dated at the lease's start would be older
+		// than the assign it supersedes and applyDHCP would reject the tombstone.
+		{12, "10.10.20.32", 1783007200, 1783007200, "77:88:99:aa:bb:cc"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parsed %d events, want %d", len(got), len(want))
@@ -138,5 +141,28 @@ func TestKeaMACJoinsRADIUS(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(ke.MACToken+"|"+ke.HostToken), "aabbccddeeff") {
 		t.Error("raw MAC leaked into the parsed Kea event")
+	}
+}
+
+// A state=2 expired-reclaimed row must actually CLOSE the lease. The release is
+// timestamped at `expire`, not at the cltt: a reclaim row can carry a longer
+// valid_lifetime than the renew that preceded it, so a cltt-dated tombstone
+// would be older than that renew and applyDHCP's newest-wins guard would drop
+// it — leaving an ended lease still resolvable.
+func TestKeaExpiredReclaimClosesLease(t *testing.T) {
+	s, clk := newClockedStore(t, 24*time.Hour, 24*time.Hour)
+	const ip = "10.0.9.1"
+	for _, line := range []string{
+		ip + ",aa:bb:cc:dd:ee:ff,,3600,1783003600,1,0,0,host,0,,0", // assign, cltt 1783000000
+		ip + ",aa:bb:cc:dd:ee:ff,,3600,1783007200,1,0,0,host,0,,0", // renew,  cltt 1783003600
+		ip + ",aa:bb:cc:dd:ee:ff,,7200,1783007200,1,0,0,host,2,,0", // reclaimed at 1783007200
+	} {
+		s.ingestKea(line)
+	}
+
+	// Inside what would have been the renewed lease, but after the reclaim.
+	*clk = time.Unix(1783005000, 0).UTC()
+	if mac, _ := s.Lookup(ip); mac != "" {
+		t.Errorf("reclaimed lease still resolves to %q; the tombstone was rejected", mac)
 	}
 }

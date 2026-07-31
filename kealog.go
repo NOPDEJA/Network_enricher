@@ -56,10 +56,11 @@ var (
 // TIME: unlike the Windows NPS/DHCP parsers there is NO timezone knob here.
 // Kea's `expire` is an absolute UNIX epoch, so it is unambiguous — LOG_TZ /
 // DHCP_LOG_TZ exist only because the Windows logs write naive local time.
-// EventTime = expire - valid_lifetime is Kea's own cltt (client-last-transmit-
-// time) reconstruction: that is when the client actually got or renewed the
-// lease. For a delete row (valid_lifetime=0) the formula degenerates to `expire`,
-// which is exactly the instant of the delete.
+// For an assign/renew, EventTime = expire - valid_lifetime is Kea's own cltt
+// (client-last-transmit-time) reconstruction: that is when the client actually
+// got or renewed the lease. For a release, EventTime is `expire` itself — the
+// instant the binding ended. See the note at the return site for why a release
+// must NOT use cltt.
 //
 // Event mapping onto the existing 10/12 contract:
 //
@@ -116,9 +117,21 @@ func parseKeaLease(line string, tok identityTokenizer) (DhcpEvent, bool, error) 
 		return DhcpEvent{}, false, nil
 	}
 
+	// An assign/renew happened at cltt (expire - valid_lifetime); a release
+	// happened AT expire. Using cltt for a release would date the tombstone
+	// before the assign it supersedes, and applyDHCP's newest-wins guard would
+	// then reject it — leaving an expired lease resolvable, which is exactly the
+	// false-attribution window this parser exists to close. (For the
+	// valid_lifetime=0 delete row the two formulas coincide; it is the
+	// state=2 expired-reclaimed row, which keeps its lifetime, that diverges.)
 	expireAt := time.Unix(expire, 0).UTC()
+	eventTime := expireAt
+	if eventID == 10 {
+		eventTime = expireAt.Add(-time.Duration(lifetime) * time.Second)
+	}
+
 	return DhcpEvent{
-		EventTime: expireAt.Add(-time.Duration(lifetime) * time.Second),
+		EventTime: eventTime,
 		EventID:   eventID,
 		IP:        addr,
 		MACToken:  tok.MACToken(fields[keaColHWAddr]),
